@@ -1,4 +1,8 @@
+from pathlib import Path
+
 from openai.types.chat import ChatCompletionMessageParam
+
+EXAMPLE = Path(__file__).parent / "example_case.json"
 
 SYSTEM_PROMPT = """你是一名资深测试工程师。根据给定的接口文档（OpenAPI）__AND_REQS__，为被测服务设计 HTTP 接口测试用例。
 

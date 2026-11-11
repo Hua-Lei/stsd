@@ -1,10 +1,8 @@
 from pathlib import Path
 import copy
 import json
-from typing import Literal
 import httpx
 import re
-from models import TestCase
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
 

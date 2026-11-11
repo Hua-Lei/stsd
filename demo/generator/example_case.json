@@ -1,0 +1,40 @@
+{
+  "id": "TC-learner-crud-happy",
+  "title": "学习者完整生命周期：创建、更新、查询、删除",
+  "requirement_ids": ["REQ-learner-crud"],
+  "category": "happy_path",
+  "steps": [
+    {
+      "name": "创建学习者",
+      "request": { "method": "POST", "path": "/learners", "body": { "name": "alice", "goal": "python" } },
+      "extract": { "learner_id": "$.learner.id" },
+      "assertions": [
+        { "source": "status", "op": "eq", "expected": 201 },
+        { "source": "body", "path": "$.learner.onboarded", "op": "eq", "expected": false }
+      ]
+    },
+    {
+      "name": "标记完成建档",
+      "request": { "method": "PATCH", "path": "/learners/{{learner_id}}", "body": { "onboarded": true } },
+      "assertions": [
+        { "source": "status", "op": "eq", "expected": 200 },
+        { "source": "body", "path": "$.learner.onboarded", "op": "eq", "expected": true },
+        { "source": "body", "path": "$.learner.name", "op": "eq", "expected": "alice" }
+      ]
+    },
+    {
+      "name": "删除学习者",
+      "request": { "method": "DELETE", "path": "/learners/{{learner_id}}" },
+      "assertions": [
+        { "source": "status", "op": "eq", "expected": 204 }
+      ]
+    },
+    {
+      "name": "删除后查询应返回 404",
+      "request": { "method": "GET", "path": "/learners/{{learner_id}}" },
+      "assertions": [
+        { "source": "status", "op": "eq", "expected": 404 }
+      ]
+    }
+  ]
+}

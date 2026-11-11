@@ -1,5 +1,6 @@
-from models import TestCase
 import re
+
+from demo.models import TestCase
 
 def static_warnings(case: TestCase, valid_ids: set[str], routes) -> list[str]:
     warnings = [f"关联编号不存在: {r}" for r in case.requirement_ids if r not in valid_ids]

@@ -48,10 +48,10 @@ class ProjectDoc:
     content: str
 
 
-@dataclass(frozen=True)
+@dataclass
 class ProjectVersion:
     '''
-    Project的一个版本，创建后不可改。
+    Project的一个版本，值对象。
     '''
     proj_id: str
     proj_version: str
@@ -120,11 +120,13 @@ class Section(LibNode):
         raise NotImplementedError
 
 
-@dataclass(frozen=True)
+@dataclass
 class TestPointVersion:
     '''
-    测试点的一条修订记录，创建后不可改。
+    测试点的一条修订记录，TestPoint 聚合内的实体，以 version_id 标识。
+    创建后内容不变，只追加。
     '''
+    version_id: str
     testpoint_id: str
     version_no: str                  # 归属的上游文档版本，对应 ProjectVersion.proj_version
     revision_no: int                 # 同一文档版本下的修订序号，从 1 开始
@@ -157,6 +159,7 @@ class TestPoint(LibNode):
         revision_no = 1 + max((v.revision_no for v in self.versions
                                if v.version_no == version_no), default=0)
         version = TestPointVersion(
+            version_id=_new_id(),
             testpoint_id=self.node_id,
             version_no=version_no,
             revision_no=revision_no,

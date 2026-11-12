@@ -9,4 +9,5 @@ dependencies = [
     "openai>=3.40.0",
     "pydantic>=2.14.1",
     "pydantic-settings>=2.16.2",
+    "sqlalchemy>=2.1.8",
 ]

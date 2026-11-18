@@ -1,26 +1,30 @@
-'''
-SQLAlchemy ORM Mapper
+'''用例库的 SQLAlchemy ORM 映射。
+
+用例库只持有 ``project_id`` 和 ``proj_ver`` 的值，不复制 Access 的项目或
+文档；项目版本是否存在通过 ``ProjectVersionLookup`` 端口确认，因此这里
+没有指向 Access 表的外键。
+
+节点使用单表继承：Section 与 TestPoint 共用 ``lib_nodes``，``name`` 列只
+属于 Section；测试点的名称在修订里。
 '''
 
-import json
-from dataclasses import asdict
+from __future__ import annotations
+
 from datetime import datetime, timezone
 
-from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer,
-                        MetaData, String, Table, Text, TypeDecorator,
-                        UniqueConstraint)
-from sqlalchemy.orm import clear_mappers, composite, registry, relationship
+from sqlalchemy import (Boolean, CheckConstraint, Column, DateTime, ForeignKey,
+                        Integer, MetaData, String, Table, Text, TypeDecorator)
+from sqlalchemy.orm import clear_mappers, registry, relationship
 
-from ..domain.model import (Actor, LibNode, Project, ProjectDoc,
-                            ProjectVersion, Section, TestPoint,
-                            TestPointVersion)
+from ..domain.model import (LibNode, Section, TestPoint, TestPointVersion)
 
 metadata = MetaData()
 mapper_registry = registry(metadata=metadata)
 
 
 class UTCDateTime(TypeDecorator):
-    '''SQLite 不保存时区，读出来补回 UTC，保证和领域层的 aware datetime 一致。'''
+    '''SQLite 不保存时区，读出来补回 UTC，保持领域层使用 aware datetime。'''
+
     impl = DateTime
     cache_ok = True
 
@@ -31,98 +35,50 @@ class UTCDateTime(TypeDecorator):
         return value.replace(tzinfo=timezone.utc) if value is not None else None
 
 
-class DocsJSON(TypeDecorator):
-    '''ProjectVersion.docs 是不可变的值对象元组，整体存成一列 JSON。'''
-    impl = Text
-    cache_ok = True
-
-    def process_bind_param(self, value: tuple[ProjectDoc, ...] | None, dialect):
-        return json.dumps([asdict(d) for d in value or ()])
-
-    def process_result_value(self, value: str | None, dialect):
-        return tuple(ProjectDoc(**d) for d in json.loads(value or '[]'))
-
-
-projects = Table(
-    'projects', metadata,
-    Column('proj_id', String, primary_key=True),
-    Column('name', String, nullable=False),
-)
-
-project_versions = Table(
-    'project_versions', metadata,
-    Column('proj_id', String, ForeignKey('projects.proj_id'), primary_key=True),
-    Column('proj_version', String, primary_key=True),
-    Column('docs', DocsJSON, nullable=False),
-)
-
-# Section 和 TestPoint 共用一张表（单表继承），name 只有 Section 用。
 lib_nodes = Table(
     'lib_nodes', metadata,
     Column('node_id', String, primary_key=True),
     Column('kind', String, nullable=False),
-    Column('proj_id', String, ForeignKey('projects.proj_id'), nullable=False, index=True),
+    Column('project_id', String, nullable=False, index=True),
     Column('parent_id', String, ForeignKey('lib_nodes.node_id'), index=True),
     Column('name', String),
     Column('is_deleted', Boolean, nullable=False, default=False),
     Column('created_at', UTCDateTime, nullable=False),
     Column('updated_at', UTCDateTime, nullable=False),
-    Column('updated_by_id', String, nullable=False),
-    Column('updated_by_name', String, nullable=False),
-    Column('updated_by_type', String, nullable=False),
+    Column('created_by', String, nullable=False),
+    Column('updated_by', String, nullable=False),
+    CheckConstraint("kind IN ('section', 'testpoint')", name='ck_lib_nodes_kind'),
 )
 
-testpoint_versions = Table(
-    'testpoint_versions', metadata,
-    Column('version_id', String, primary_key=True),
-    Column('testpoint_id', String, ForeignKey('lib_nodes.node_id'), nullable=False, index=True),
-    Column('version_no', String, nullable=False),
-    Column('revision_no', Integer, nullable=False),
+# 修订由 (testpoint_id, revision_ver) 标识；proj_ver 只是说明性信息。
+testpoint_revisions = Table(
+    'testpoint_revisions', metadata,
+    Column('testpoint_id', String,
+           ForeignKey('lib_nodes.node_id'), primary_key=True),
+    Column('revision_ver', Integer, primary_key=True),
     Column('name', String, nullable=False),
-    Column('desc', Text, nullable=False),
-    Column('change_note', Text, nullable=False),
-    Column('impl_ref', String),
+    Column('description', Text, nullable=False),
+    Column('implementation', Text),
+    Column('proj_ver', String, nullable=False),
+    Column('status', String, nullable=False),
     Column('created_at', UTCDateTime, nullable=False),
-    Column('created_by_id', String, nullable=False),
-    Column('created_by_name', String, nullable=False),
-    Column('created_by_type', String, nullable=False),
-    UniqueConstraint('testpoint_id', 'version_no', 'revision_no'),
+    Column('created_by', String, nullable=False),
+    CheckConstraint("status IN ('draft', 'frozen')",
+                    name='ck_testpoint_revisions_status'),
+    CheckConstraint('revision_ver >= 1',
+                    name='ck_testpoint_revisions_revision_ver'),
 )
 
 
 def start_mappers() -> None:
-    mapper_registry.map_imperatively(ProjectVersion, project_versions)
-    mapper_registry.map_imperatively(Project, projects, properties={
-        'versions': relationship(
-            ProjectVersion,
-            order_by=project_versions.c.proj_version,
-            cascade='all, delete-orphan',
-        ),
-    })
-
-    mapper_registry.map_imperatively(TestPointVersion, testpoint_versions, properties={
-        'created_by': composite(
-            Actor,
-            testpoint_versions.c.created_by_id,
-            testpoint_versions.c.created_by_name,
-            testpoint_versions.c.created_by_type,
-        ),
-    })
+    mapper_registry.map_imperatively(TestPointVersion, testpoint_revisions)
 
     mapper_registry.map_imperatively(
         LibNode, lib_nodes,
         polymorphic_on=lib_nodes.c.kind,
         # 查询基类时一并加载子类的列（Section.name），否则会话关闭后访问会报错。
         with_polymorphic='*',
-        properties={
-            'updated_by': composite(
-                Actor,
-                lib_nodes.c.updated_by_id,
-                lib_nodes.c.updated_by_name,
-                lib_nodes.c.updated_by_type,
-            ),
-        },
-        # name 只属于 Section，不能挂到基类上，否则 TestPoint 也会有 name 属性。
+        # name 只属于 Section，不能挂到基类上，否则 TestPoint 也会有 name。
         exclude_properties=['name'],
     )
     mapper_registry.map_imperatively(
@@ -133,11 +89,11 @@ def start_mappers() -> None:
         TestPoint, inherits=LibNode, polymorphic_identity='testpoint',
         exclude_properties=['name'],
         properties={
-            'versions': relationship(
+            'revisions': relationship(
                 TestPointVersion,
-                order_by=testpoint_versions.c.created_at,
-                cascade='all',
-                lazy='selectin',  # 聚合查出来就带着版本历史，会话关闭后也能读
+                order_by=testpoint_revisions.c.revision_ver,
+                cascade='all, delete-orphan',
+                lazy='selectin',
             ),
         },
     )

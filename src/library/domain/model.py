@@ -1,175 +1,206 @@
-'''
-用例库领域模型。
+'''用例库领域模型。
 
-- Project 持有上游文档的各个版本。
-- LibNode 是用例树上的节点：Section 是目录，TestPoint 是测试点。
-- TestPoint 是聚合根，自己持有版本历史，历史只追加、不修改。
-- 聚合之间只用 id 互相引用；涉及多个聚合的规则（父节点是否存在、
-  文档版本是否存在等）留给应用层。
+用例树由两种节点构成：Section 是目录，只负责组织结构；测试点（TestPoint）
+拥有一条按序号线性增长的修订历史。
+
+修订由 ``(testpoint_id, revision_ver)`` 标识，``proj_ver`` 只说明这次修订
+针对哪个项目版本写成，不参与标识（见 decisions/001）。修订产生后内容不再
+改动；实现只能在该修订为草稿时设置，冻结要求实现非空（见 decisions/002）。
 '''
+
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import ClassVar, Literal, Self
 from uuid import uuid4
 
+from .errors import (ImplementationRequired, InvalidArgument, NodeDeleted,
+                     RevisionFrozen, RevisionNotFound)
 
-class LibraryError(Exception):
-    pass
-
-
-class NodeError(LibraryError):
-    pass
+RevisionStatus = Literal['draft', 'frozen']
+NodeType = Literal['section', 'testpoint']
 
 
-class VersionError(LibraryError):
-    pass
-
-
-def _now() -> datetime:
+def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _new_id() -> str:
+def new_id() -> str:
     return uuid4().hex
 
 
 @dataclass(frozen=True)
-class Actor:
-    actor_id: str
+class RevisionDetail:
+    '''ReviseTestPoint 提供的内容。实现不在这里设置，由 AddImplementation 补。'''
+
     name: str
-    type: Literal['user', 'agent']
+    description: str = ''
 
-
-@dataclass(frozen=True)
-class ProjectDoc:
-    doc_id: str
-    title: str
-    content: str
-
-
-@dataclass
-class ProjectVersion:
-    '''
-    Project的一个版本，值对象。
-    '''
-    proj_id: str
-    proj_version: str
-    docs: tuple[ProjectDoc, ...] = ()
-
-
-@dataclass
-class Project:
-    proj_id: str
-    name: str
-    versions: list[ProjectVersion] = field(default_factory=list)
-
-    def add_version(self, proj_version: str,
-                    docs: tuple[ProjectDoc, ...] = ()) -> ProjectVersion:
-        if any(v.proj_version == proj_version for v in self.versions):
-            raise VersionError(f'project version {proj_version!r} already exists')
-        version = ProjectVersion(self.proj_id, proj_version, docs)
-        self.versions.append(version)
-        return version
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise InvalidArgument('revision name must not be empty')
+        if not isinstance(self.description, str):
+            raise InvalidArgument('revision description must be a string')
+        object.__setattr__(self, 'name', self.name.strip())
 
 
 @dataclass(kw_only=True)
 class LibNode:
-    '''
-    用例树的节点，软删除机制
-    '''
-    node_type: ClassVar[Literal['section', 'testpoint']]
+    '''用例树节点。删除是软删除，节点和已冻结修订的历史都保留。'''
+
+    node_type: ClassVar[NodeType]
 
     node_id: str
-    proj_id: str
+    project_id: str
     parent_id: str | None
-    
     created_at: datetime
     updated_at: datetime
-    updated_by: Actor
+    created_by: str
+    updated_by: str
     is_deleted: bool = False
 
     @classmethod
-    def create(cls, proj_id: str, parent_id: str | None, actor: Actor,
+    def create(cls, project_id: str, parent_id: str | None, actor_id: str,
                **fields) -> Self:
-        now = _now()
-        return cls(node_id=_new_id(), proj_id=proj_id, parent_id=parent_id,
-                   created_at=now, updated_at=now, updated_by=actor, **fields)
+        now = now_utc()
+        return cls(
+            node_id=new_id(),
+            project_id=project_id,
+            parent_id=parent_id,
+            created_at=now,
+            updated_at=now,
+            created_by=actor_id,
+            updated_by=actor_id,
+            **fields,
+        )
 
-    def _touch(self, actor: Actor) -> None:
-        self.updated_at = _now()
-        self.updated_by = actor
+    def _touch(self, actor_id: str) -> None:
+        self.updated_at = now_utc()
+        self.updated_by = actor_id
 
-    def soft_delete(self, actor: Actor) -> None:
+    def soft_delete(self, actor_id: str) -> None:
         if self.is_deleted:
-            raise NodeError(f'node {self.node_id} is already deleted')
+            raise NodeDeleted(self.node_id)
         self.is_deleted = True
-        self._touch(actor)
+        self._touch(actor_id)
 
 
 @dataclass(kw_only=True)
 class Section(LibNode):
-    '''
-    目录节点，只负责组织结构。
-    '''
-    node_type = 'section'
+    '''目录节点，只负责组织结构；内容的变化由子节点承担。'''
+
+    node_type: ClassVar[NodeType] = 'section'
 
     name: str
-    def list() -> list[LibNode]:
-        """返回该目录下的子节点列表，按创建时间排序"""
-        raise NotImplementedError
 
 
 @dataclass
 class TestPointVersion:
+    '''测试点的一条修订，是 TestPoint 聚合内的实体。
+
+    修订一旦产生，``name``、``description``、``proj_ver`` 不再变化；
+    ``implementation`` 只在草稿状态可以覆盖，冻结后也不能再改。
     '''
-    测试点的一条修订记录，TestPoint 聚合内的实体，以 version_id 标识。
-    创建后内容不变，只追加。
-    '''
-    version_id: str
+
     testpoint_id: str
-    version_no: str                  # 归属的上游文档版本，对应 ProjectVersion.proj_version
-    revision_no: int                 # 同一文档版本下的修订序号，从 1 开始
+    revision_ver: int
     name: str
-    desc: str                        # 该版本的完整测试内容
-    change_note: str
+    description: str
+    implementation: str | None
+    proj_ver: str
+    status: RevisionStatus
     created_at: datetime
-    created_by: Actor
-    impl_ref: str | None = None      # 可执行实现的引用，None 表示尚未实现
+    created_by: str
+
+    @property
+    def is_frozen(self) -> bool:
+        return self.status == 'frozen'
 
 
 @dataclass(kw_only=True)
 class TestPoint(LibNode):
-    '''
-    测试点
-    '''
-    node_type = 'testpoint'
+    '''测试点聚合根，自己持有按序号线性增长的修订历史。'''
 
-    versions: list[TestPointVersion] = field(default_factory=list)
+    node_type: ClassVar[NodeType] = 'testpoint'
+
+    revisions: list[TestPointVersion] = field(default_factory=list)
 
     @property
-    def current(self) -> TestPointVersion | None:
-        return self.versions[-1] if self.versions else None
+    def latest_revision(self) -> TestPointVersion | None:
+        return max(self.revisions, key=lambda r: r.revision_ver, default=None)
 
-    def revise(self, version_no: str, name: str, desc: str, actor: Actor,
-               impl_ref: str | None = None,
-               change_note: str = '') -> TestPointVersion:
-        if self.is_deleted:
-            raise NodeError(f'node {self.node_id} is deleted')
-        revision_no = 1 + max((v.revision_no for v in self.versions
-                               if v.version_no == version_no), default=0)
-        version = TestPointVersion(
-            version_id=_new_id(),
-            testpoint_id=self.node_id,
-            version_no=version_no,
-            revision_no=revision_no,
-            name=name,
-            desc=desc,
-            change_note=change_note,
-            created_at=_now(),
-            created_by=actor,
-            impl_ref=impl_ref,
+    @property
+    def latest_frozen_revision(self) -> TestPointVersion | None:
+        frozen = [r for r in self.revisions if r.is_frozen]
+        return max(frozen, key=lambda r: r.revision_ver, default=None)
+
+    def revision(self, revision_ver: int) -> TestPointVersion | None:
+        return next(
+            (r for r in self.revisions if r.revision_ver == revision_ver),
+            None,
         )
-        self.versions.append(version)
-        self._touch(actor)
-        return version
+
+    def content_unchanged(self, detail: RevisionDetail) -> bool:
+        latest = self.latest_revision
+        return (
+            latest is not None
+            and latest.name == detail.name
+            and latest.description == detail.description
+        )
+
+    def add_revision(self, proj_ver: str, detail: RevisionDetail,
+                     actor_id: str) -> TestPointVersion:
+        '''产生一条新修订；实现为空，状态为草稿。'''
+        if self.is_deleted:
+            raise NodeDeleted(self.node_id)
+
+        revision = TestPointVersion(
+            testpoint_id=self.node_id,
+            revision_ver=max(
+                (r.revision_ver for r in self.revisions), default=0
+            ) + 1,
+            name=detail.name,
+            description=detail.description,
+            implementation=None,
+            proj_ver=proj_ver,
+            status='draft',
+            created_at=now_utc(),
+            created_by=actor_id,
+        )
+        self.revisions.append(revision)
+        self._touch(actor_id)
+        return revision
+
+    def add_implementation(self, revision_ver: int, code_impl: str,
+                           actor_id: str) -> TestPointVersion:
+        '''为草稿修订补充或覆盖实现。'''
+        if self.is_deleted:
+            raise NodeDeleted(self.node_id)
+        revision = self.revision(revision_ver)
+        if revision is None:
+            raise RevisionNotFound(self.node_id, revision_ver)
+        if revision.is_frozen:
+            raise RevisionFrozen(self.node_id, revision_ver)
+        if not isinstance(code_impl, str) or not code_impl.strip():
+            raise InvalidArgument('implementation must not be empty')
+
+        revision.implementation = code_impl
+        self._touch(actor_id)
+        return revision
+
+    def freeze(self, revision_ver: int, actor_id: str) -> TestPointVersion:
+        '''冻结草稿修订；冻结后内容与实现都不可变，且不可撤销。'''
+        if self.is_deleted:
+            raise NodeDeleted(self.node_id)
+        revision = self.revision(revision_ver)
+        if revision is None:
+            raise RevisionNotFound(self.node_id, revision_ver)
+        if revision.is_frozen:
+            raise RevisionFrozen(self.node_id, revision_ver)
+        if not revision.implementation or not revision.implementation.strip():
+            raise ImplementationRequired(self.node_id, revision_ver)
+
+        revision.status = 'frozen'
+        self._touch(actor_id)
+        return revision

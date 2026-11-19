@@ -4,10 +4,12 @@
 引用的不可变资产。只通过 ``ProjectVersionLookup`` 端口向 Access 确认
 ``proj_ver`` 存在，不引用 Access 的对象。
 
-需要 ``ProjectVersionLookup`` 的服务接口形状为 ``(uow, dep, command)``，
-其余为 ``(uow, command)``；命令与读请求对象见 ``stsd.library.command``。
+模块门面的服务接口形状为 ``(uow[, dep], command)``，命令与读请求对象见
+``stsd.library.command``。应用外层使用 ``build_library_app`` 装配好的
+``LibraryApp``：每个用例只接收一个 command，工作单元和端口在内部注入。
 '''
 
+from stsd.library.app import LibraryApp, build_library_app
 from stsd.library.command import (
     AddImplementation,
     AddTestPoint,
@@ -68,6 +70,7 @@ __all__ = [
     'GetTestPointDetail',
     'ImplementationRequired',
     'InvalidArgument',
+    'LibraryApp',
     'LibraryError',
     'NodeDeleted',
     'NodeNotFound',
@@ -89,6 +92,7 @@ __all__ = [
     'add_implementation',
     'add_testpoint',
     'audit_and_freeze',
+    'build_library_app',
     'create_section',
     'delete_node',
     'get_section_tree',

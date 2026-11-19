@@ -3,10 +3,12 @@
 管理用户、项目、项目版本及其文档、项目成员，是其他模块的基础支撑。
 其他模块只使用这里导出的读接口；写操作由 Access 自己或 API 层调用。
 
-Access 没有外部端口，服务接口形状为 ``(uow, command)``；命令与读请求对象
-见 ``stsd.access.command``。
+模块门面的服务接口形状为 ``(uow, command)``，命令与读请求对象见
+``stsd.access.command``。应用外层使用 ``build_access_app`` 装配好的
+``AccessApp``：每个用例只接收一个 command，工作单元在内部创建。
 '''
 
+from stsd.access.app import AccessApp, build_access_app
 from stsd.access.command import (
     AddProjectVersion,
     AddUserToProject,
@@ -53,6 +55,7 @@ from stsd.access.service_layer.views import (
 
 __all__ = [
     'AbstractUnitOfWork',
+    'AccessApp',
     'AccessError',
     'AddProjectVersion',
     'AddUserToProject',
@@ -78,6 +81,7 @@ __all__ = [
     'UserView',
     'add_project_version',
     'add_user_to_project',
+    'build_access_app',
     'create_project',
     'create_user',
     'get_project_members',

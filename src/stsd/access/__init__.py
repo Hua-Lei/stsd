@@ -2,8 +2,21 @@
 
 管理用户、项目、项目版本及其文档、项目成员，是其他模块的基础支撑。
 其他模块只使用这里导出的读接口；写操作由 Access 自己或 API 层调用。
+
+Access 没有外部端口，服务接口形状为 ``(uow, command)``；命令与读请求对象
+见 ``stsd.access.command``。
 '''
 
+from stsd.access.command import (
+    AddProjectVersion,
+    AddUserToProject,
+    CreateProject,
+    CreateUser,
+    GetProjectMembers,
+    GetProjectVersion,
+    GetUserProjects,
+    ListProjectVersions,
+)
 from stsd.access.domain.errors import (
     AccessError,
     DuplicateProjectVersion,
@@ -38,11 +51,19 @@ from stsd.access.service_layer.views import (
 __all__ = [
     'AbstractUnitOfWork',
     'AccessError',
+    'AddProjectVersion',
+    'AddUserToProject',
+    'CreateProject',
+    'CreateUser',
     'Document',
     'DocumentKind',
     'DocumentView',
     'DuplicateProjectVersion',
+    'GetProjectMembers',
+    'GetProjectVersion',
+    'GetUserProjects',
     'InvalidArgument',
+    'ListProjectVersions',
     'ProjectMemberView',
     'ProjectNotFound',
     'ProjectVersion',

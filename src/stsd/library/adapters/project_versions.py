@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from stsd.access import ProjectNotFound, ProjectVersionNotFound, get_project_version
+from stsd.access import (
+    GetProjectVersion,
+    ProjectNotFound,
+    ProjectVersionNotFound,
+    get_project_version,
+)
 from stsd.access import SqlAlchemyUnitOfWork as AccessUnitOfWork
 from stsd.library.ports import ProjectVersionLookup
 
@@ -21,7 +26,10 @@ class AccessProjectVersionLookup(ProjectVersionLookup):
     def project_version_exists(self, project_id: str, proj_ver: str) -> bool:
         try:
             with AccessUnitOfWork(self._session_factory) as uow:
-                get_project_version(uow, project_id, proj_ver)
+                get_project_version(
+                    uow,
+                    GetProjectVersion(project_id=project_id, proj_ver=proj_ver),
+                )
         except (ProjectNotFound, ProjectVersionNotFound):
             return False
         return True

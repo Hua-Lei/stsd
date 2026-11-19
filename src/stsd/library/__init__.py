@@ -3,8 +3,21 @@
 管理项目内的 Section 树和测试点的修订历史；决定一条修订何时成为可被任务
 引用的不可变资产。只通过 ``ProjectVersionLookup`` 端口向 Access 确认
 ``proj_ver`` 存在，不引用 Access 的对象。
+
+需要 ``ProjectVersionLookup`` 的服务接口形状为 ``(uow, dep, command)``，
+其余为 ``(uow, command)``；命令与读请求对象见 ``stsd.library.command``。
 '''
 
+from stsd.library.command import (
+    AddImplementation,
+    AddTestPoint,
+    AuditAndFreeze,
+    CreateSection,
+    DeleteNode,
+    GetSectionTree,
+    GetTestPointDetail,
+    ReviseTestPoint,
+)
 from stsd.library.domain.errors import (
     ImplementationRequired,
     InvalidArgument,
@@ -49,6 +62,13 @@ from stsd.library.service_layer.views import (
 
 __all__ = [
     'AbstractUnitOfWork',
+    'AddImplementation',
+    'AddTestPoint',
+    'AuditAndFreeze',
+    'CreateSection',
+    'DeleteNode',
+    'GetSectionTree',
+    'GetTestPointDetail',
     'ImplementationRequired',
     'InvalidArgument',
     'LibraryError',
@@ -63,6 +83,7 @@ __all__ = [
     'RevisionFrozen',
     'RevisionNotFound',
     'RevisionStatus',
+    'ReviseTestPoint',
     'Section',
     'SectionTreeNode',
     'SqlAlchemyUnitOfWork',

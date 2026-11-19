@@ -82,6 +82,9 @@ testpoint_revisions = Table(
 
 
 def start_mappers() -> None:
+    '''装配映射。重复调用安全：已装配时直接返回。'''
+    if mapper_registry.mappers:
+        return
     mapper_registry.map_imperatively(TestPointVersion, testpoint_revisions)
 
     mapper_registry.map_imperatively(

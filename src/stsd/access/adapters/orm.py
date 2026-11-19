@@ -120,6 +120,9 @@ project_versions = Table(
 
 
 def start_mappers() -> None:
+    '''装配映射。重复调用安全：已装配时直接返回。'''
+    if mapper_registry.mappers:
+        return
     mapper_registry.map_imperatively(User, users)
     mapper_registry.map_imperatively(Project, projects)
     mapper_registry.map_imperatively(ProjectMember, project_members)

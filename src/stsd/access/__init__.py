@@ -25,7 +25,10 @@ from stsd.access.domain.errors import (
     ProjectVersionNotFound,
     UserNotFound,
 )
-from stsd.access.domain.model import Document, DocumentKind, ProjectVersion, UserInfo
+
+# 只导出命令的输入类型。Project、ProjectVersion、User、ProjectMember 是被
+# ORM 映射的聚合，留在模块内部；外部读到的是 views 里的读模型。
+from stsd.access.domain.model import Document, DocumentKind, UserInfo
 from stsd.access.service_layer.service import (
     add_project_version,
     add_user_to_project,
@@ -66,7 +69,6 @@ __all__ = [
     'ListProjectVersions',
     'ProjectMemberView',
     'ProjectNotFound',
-    'ProjectVersion',
     'ProjectVersionNotFound',
     'ProjectVersionView',
     'ProjectView',

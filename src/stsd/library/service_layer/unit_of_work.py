@@ -2,9 +2,6 @@
 
 一次业务用例一个事务：进入时创建会话与仓储，退出时回滚未提交的改动，
 提交必须显式调用 ``commit()``。
-
-外部端口不放在工作单元里；它们通过服务层参数 ``dep``（``ProjectVersionLookup``）
-显式传入。
 '''
 
 from __future__ import annotations
@@ -18,6 +15,7 @@ from stsd.library.adapters.repository import (
     LibraryRepository,
     SqlAlchemyLibraryRepository,
 )
+from stsd.shared.events import EventPublisher, NullPublisher
 
 
 class AbstractUnitOfWork(abc.ABC):
@@ -37,8 +35,13 @@ class AbstractUnitOfWork(abc.ABC):
 
 
 class SqlAlchemyUnitOfWork(AbstractUnitOfWork):
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        publisher: EventPublisher | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        self._publisher = publisher or NullPublisher()
 
     def __enter__(self) -> Self:
         self._session = self._session_factory()
@@ -50,7 +53,24 @@ class SqlAlchemyUnitOfWork(AbstractUnitOfWork):
         self._session.close()
 
     def commit(self) -> None:
+        events = self._collect_events()
         self._session.commit()
+        # 提交成功之后才发布：否则订阅者可能对随后被回滚的事实做出反应。
+        for event in events:
+            self._publisher.publish(event)
 
     def rollback(self) -> None:
+        # 丢弃本次事务内积累的事件，它们对应的事实并未成立。
+        self._collect_events()
         self._session.rollback()
+
+    def _collect_events(self) -> list[object]:
+        '''取走会话内各聚合记下的事件。
+        '''
+        events: list[object] = []
+        for obj in self._session:
+            pending = getattr(obj, 'events', None)
+            if pending:
+                events.extend(pending)
+                pending.clear()
+        return events

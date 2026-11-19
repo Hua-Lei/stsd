@@ -31,13 +31,10 @@ from stsd.library.domain.errors import (
     RevisionFrozen,
     RevisionNotFound,
 )
-from stsd.library.domain.model import (
-    RevisionDetail,
-    RevisionStatus,
-    Section,
-    TestPoint,
-    TestPointVersion,
-)
+
+# 只导出命令的输入类型与读模型用到的字面量类型。Section、TestPoint、
+# TestPointVersion 是被 ORM 映射的聚合，留在模块内部，外部改不到它们。
+from stsd.library.domain.model import RevisionDetail, RevisionStatus
 from stsd.library.ports import ProjectVersionLookup
 from stsd.library.service_layer.service import (
     add_implementation,
@@ -78,19 +75,16 @@ __all__ = [
     'NotATestPoint',
     'ProjectVersionLookup',
     'ProjectVersionNotFound',
+    'ReviseTestPoint',
     'RevisionConflict',
     'RevisionDetail',
     'RevisionFrozen',
     'RevisionNotFound',
     'RevisionStatus',
-    'ReviseTestPoint',
-    'Section',
     'SectionTreeNode',
     'SqlAlchemyUnitOfWork',
-    'TestPoint',
     'TestPointDetail',
     'TestPointTreeNode',
-    'TestPointVersion',
     'TreeNode',
     'add_implementation',
     'add_testpoint',

@@ -4,7 +4,7 @@
 ## 代码库状况
 
 1. access和library模块基本成型
-2. task还处于dev阶段
+2. task基本完成
 3. 其余模块待做
 
 ## Roadmap

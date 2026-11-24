@@ -10,4 +10,6 @@
 
 ## 事件
 
-订阅 `TaskExecCompleted`，收到后保存其中的执行结果。暂无发出。
+订阅 `TaskExecCompleted`，收到后保存其中的执行结果，载荷见 [contracts/events.md](../contracts/events.md)。暂无发出。
+
+逐条结果要保存执行时实际用的绑定，否则没法解释一条旧结果当时打的是哪个环境，见 [decisions/008](../decisions/008-implementation-binding-not-frozen.md)。

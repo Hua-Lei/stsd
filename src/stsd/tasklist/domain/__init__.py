@@ -1,29 +1,30 @@
 """任务清单的领域层：实体、值对象、领域规则与纯函数。"""
 
-from stsd.tasklist.domain.hashing import (
-    compute_case_content_hash,
-    compute_list_content_hash,
-)
-from stsd.tasklist.domain.model import (
-    CaseRef,
+from .hashing import compute_testpoint_content_hash, compute_list_content_hash
+from .model import (
+    TestPointRef,
     CopyMode,
     Status,
     TaskList,
     TaskListItem,
     normalize_title,
     utc_now,
-    validate_target,
+    validate_project_version,
 )
+from .versioning import compare_versions, normalize_software_version, version_key
 
 __all__ = [
-    "CaseRef",
+    "TestPointRef",
     "CopyMode",
     "Status",
     "TaskList",
     "TaskListItem",
-    "compute_case_content_hash",
+    "compare_versions",
+    "compute_testpoint_content_hash",
     "compute_list_content_hash",
+    "normalize_software_version",
     "normalize_title",
     "utc_now",
-    "validate_target",
+    "validate_project_version",
+    "version_key",
 ]

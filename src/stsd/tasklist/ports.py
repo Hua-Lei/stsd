@@ -1,91 +1,102 @@
 """任务清单依赖的外部端口（Port）。
 
-任务清单不直连用例库或执行结果表，只认接口。因此这里只定义 ``Protocol``
-与 DTO，不包含任何存储实现；真实实现放在 ``tasklist.adapters`` 或其它模块，
-任务清单不需要知道对面是 JSON、SQLite 还是 HTTP。
-
-依赖方向（与控制流相反）：
-
-    用例库 / 执行结果  ──实现──>  Port  <──调用──  任务清单
-
-端口是“应用层拥有的接口”，不是适配器定义的接口。服务层只依赖这里的形状，
-测试因此可以直接注入内存实现，而不用启动数据库或网络。
+任务清单不直连用例库或执行结果表，只认接口。这里使用用例库的术语：
+TestPoint / Revision；软件发布版本统一称为 ``project_version``。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Protocol, Sequence
+from typing import Any, Protocol, Sequence
 
-CaseStatus = Literal["active", "deprecated"]
+# 测试点修订的完整标识：(testpoint_id, revision_ver)
+RevisionKey = tuple[str, int]
+
+
+# ---------------------------------------------------------------------------
+# Access 端口
+# ---------------------------------------------------------------------------
+class ProjectVersionLookup(Protocol):
+    """向 Access 确认“某项目有没有某个 proj_ver”。
+
+    端口只读不可变事实，必须在任务清单写操作之前调用；实现方自持只读
+    事务，不参与任务清单的事务。
+    """
+
+    def project_version_exists(self, project_id: str, proj_ver: str) -> bool:
+        '''项目版本存在返回 True，否则返回 False。'''
+        ...
 
 
 # ---------------------------------------------------------------------------
 # 用例库端口
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
-class VersionRecord:
-    """某个用例某个版本的完整坐标。
+class RevisionRecord:
+    """某个测试点的一条修订。"""
 
-    ``release_order`` 是软件版本的单调递增整数；``use_case_version`` 是
-    用例自身的版本号。多数情况下两者相同，但分开保存可以让“同一版本
-    在不同软件版本下可用”这类扩展不必改协议。
-    """
-
-    use_case_id: str
-    use_case_version: int
-    release_order: int
-    content_hash: str
+    testpoint_id: str
+    revision_ver: int
     title: str
-    requirement_ids: tuple[str, ...] = ()
-    risk_level: str | None = None
-    status: CaseStatus = "active"
+
+    @property
+    def revision_key(self) -> RevisionKey:
+        return (self.testpoint_id, self.revision_ver)
 
 
 @dataclass(frozen=True)
-class CaseBrief:
-    """用例的展示信息（人工/LLM 决策时需要的最小描述）。"""
+class TestPointBrief:
+    """测试点的展示信息。"""
 
-    use_case_id: str
+    testpoint_id: str
     title: str
-    requirement_ids: tuple[str, ...] = ()
-    risk_level: str | None = None
 
 
 @dataclass(frozen=True)
-class ResolveOutcome:
-    """版本解析结果：要么拿到版本，要么拿到失败码。"""
+class RevisionOutcome:
+    """修订解析结果：要么拿到修订，要么拿到失败码。"""
 
-    version: VersionRecord | None = None
-    code: str | None = None  # CASE_NOT_FOUND | NO_APPLICABLE_VERSION
+    revision: RevisionRecord | None = None
+    code: str | None = None  # TESTPOINT_NOT_FOUND | NO_APPLICABLE_REVISION
 
     @property
     def ok(self) -> bool:
-        return self.version is not None
+        return self.revision is not None
 
 
-class CaseLibraryPort(Protocol):
-    """用例库只暴露任务清单真正需要的三个能力。"""
+class TestPointLibraryPort(Protocol):
+    """用例库对外提供的只读查询能力。"""
 
-    def resolve_versions(
-        self, case_ids: Sequence[str], target_order: int
-    ) -> dict[str, ResolveOutcome]:
-        """按 design 第四节规则批量解析版本。
+    def resolve_revisions(
+        self, testpoint_ids: Sequence[str], project_version: str
+    ) -> dict[str, RevisionOutcome]:
+        """解析每个测试点应使用的修订。
 
-        规则：在 ``status == "active"`` 且 ``release_order <= target`` 的版本中取
-        ``release_order`` 最大者；集合为空返回 ``NO_APPLICABLE_VERSION``，
-        用例不存在返回 ``CASE_NOT_FOUND``。不得回退到最早版本。
+        真实用例库当前返回最新已冻结修订；不存在返回 ``TESTPOINT_NOT_FOUND``，
+        没有可用修订返回 ``NO_APPLICABLE_REVISION``。
         """
         ...
 
-    def get_versions(
-        self, refs: Sequence[tuple[str, int]]
-    ) -> dict[tuple[str, int], VersionRecord | None]:
-        """按 ``(use_case_id, use_case_version)`` 精确取版本；不存在返回 None。"""
+    def get_revisions(
+        self, refs: Sequence[RevisionKey]
+    ) -> dict[RevisionKey, RevisionRecord | None]:
+        """按 ``(testpoint_id, revision_ver)`` 精确取修订；不存在返回 None。"""
         ...
 
-    def get_case_briefs(self, case_ids: Sequence[str]) -> dict[str, CaseBrief]:
-        """返回存在的用例的展示信息；不存在的 id 不出现在结果里。"""
+    def get_testpoint_briefs(
+        self, testpoint_ids: Sequence[str]
+    ) -> dict[str, TestPointBrief]:
+        """返回存在的测试点的展示信息；不存在的 id 不放入结果。"""
+        ...
+
+    def get_testpoint_payload(
+        self, testpoint_id: str, revision_ver: int
+    ) -> Any | None:
+        """按 ``testpoint_id + revision_ver`` 取实现正文。
+
+        返回 None 表示测试点或修订不存在。正文的格式暂不约定；TaskList
+        只负责取回并计算内容指纹，执行器是否能执行由执行器适配层决定。
+        """
         ...
 
 
@@ -94,13 +105,9 @@ class CaseLibraryPort(Protocol):
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class LastRun:
-    """某条用例最近一次执行结果。
+    """某个测试点最近一次执行结果。"""
 
-    必须带 ``use_case_version`` 与 ``content_hash``：否则“上次通过了”会被
-    错误地当作“本轮可以不测”。判定跳过依据是“同版本或内容未变且通过”。
-    """
-
-    use_case_version: int
+    revision_ver: int
     content_hash: str | None
     status: str  # 与执行器一致：passed | failed | error
     run_at: str
@@ -119,11 +126,11 @@ class RunHistoryPort(Protocol):
     """执行结果只读端口。任务清单永远不写它。"""
 
     def get_last_results(
-        self, case_ids: Sequence[str]
+        self, testpoint_ids: Sequence[str]
     ) -> dict[str, LastRun | None]:
         ...
 
     def get_duration_stats(
-        self, case_ids: Sequence[str], window_days: int = 30
+        self, testpoint_ids: Sequence[str], window_days: int = 30
     ) -> dict[str, DurationStat]:
         ...

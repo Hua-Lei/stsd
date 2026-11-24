@@ -1,7 +1,5 @@
 """应用层（Service Layer）：一个函数就是一个业务用例。
 
-沿用参考实现 ``src/library/service_layer/service.py`` 的风格：
-
 - 服务函数无状态，只负责开事务、取聚合、调用领域规则、写回；
 - 实体自己的规则在 ``domain/model.py``；
 - 需要查仓储/端口才能判断的跨聚合规则（目标版本下是否还有适用版本、
@@ -17,39 +15,62 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from stsd.tasklist.domain.model import (
-    CaseRef,
+from ..domain.model import (
     CopyMode,
     Status,
     TaskList,
-    validate_target,
+    TestPointRef,
+    validate_project_version,
 )
-from stsd.tasklist.errors import (
-    EmptyList,
+from ..domain.hashing import compute_testpoint_content_hash
+from ..domain.errors import (
     ErrorCode,
-    ExportUnsupported,
+    EmptyList,
     InvalidArgument,
     ListLocked,
     ListNotFound,
     ListNotLocked,
+    ProjectVersionNotFound,
     TaskListError,
     rejection,
 )
-from stsd.tasklist.service_layer import views
-from stsd.tasklist.service_layer.unit_of_work import AbstractUnitOfWork
+from ..ports import ProjectVersionLookup
+from . import views
+from .unit_of_work import AbstractUnitOfWork
+from ..command import (
+    AddItems,
+    CopyTaskList,
+    CreateTaskList,
+    ExportTestPoints,
+    GetTaskList,
+    ListTaskLists,
+    LockTaskList,
+    PreviewTaskList,
+    RemoveItems,
+    RenameTaskList,
+)
 
 
 # ===========================================================================
 # 生命周期
 # ===========================================================================
-def create_list(
+def create_tasklist(
     uow: AbstractUnitOfWork,
-    target_software_release_version: int | None,
-    tasklist_title: str | None = None,
+    project_versions: ProjectVersionLookup,
+    command: CreateTaskList,
 ) -> dict[str, Any]:
+    """创建 DRAFT 清单；先向 Access 确认项目版本存在。"""
+
+    project_version = validate_project_version(command.project_version)
+
     with uow:
+        _require_project_version(
+            project_versions, uow.tasklists.proj_id, project_version
+        )
         tasklist = TaskList.create(
-            uow.tasklists.proj_id, target_software_release_version, tasklist_title
+            uow.tasklists.proj_id,
+            project_version,
+            command.tasklist_title,
         )
         uow.tasklists.save(tasklist)
         uow.commit()
@@ -59,24 +80,34 @@ def create_list(
         }
 
 
-def copy_list(
+def copy_tasklist(
     uow: AbstractUnitOfWork,
-    source_tasklist_id: str,
-    target_software_release_version: int | None,
-    mode: str | CopyMode = CopyMode.RERESOLVE,
+    project_versions: ProjectVersionLookup,
+    command: CopyTaskList,
 ) -> dict[str, Any]:
-    target = validate_target(target_software_release_version)
-    copy_mode = _normalize_mode(mode)
+    """从已有清单复制一份新草稿。
+
+    RERESOLVE 在复制这一刻按新项目版本重新解析；PINNED 保留来源引用。
+    新项目版本同样要先向 Access 确认存在。
+    """
+
+    project_version = validate_project_version(command.project_version)
+    copy_mode = _normalize_mode(command.mode)
 
     with uow:
-        source = _require(uow, source_tasklist_id, for_update=True)
-        accepted, rejected, warnings = _copy_refs(uow, source, target, copy_mode)
+        _require_project_version(
+            project_versions, uow.tasklists.proj_id, project_version
+        )
+        source = _require(uow, command.source_tasklist_id, for_update=True)
+        accepted, rejected, warnings = _copy_refs(
+            uow, source, project_version, copy_mode
+        )
 
         tasklist = TaskList.create(
             uow.tasklists.proj_id,
-            target,
+            project_version,
             source.tasklist_title,
-            case_refs=accepted,
+            testpoint_refs=accepted,
             source_tasklist_id=source.tasklist_id,
             copy_mode=copy_mode,
         )
@@ -94,9 +125,12 @@ def copy_list(
         }
 
 
-def lock_list(
-    uow: AbstractUnitOfWork, tasklist_id: str
+def lock_tasklist(
+    uow: AbstractUnitOfWork, command: LockTaskList
 ) -> dict[str, Any]:
+    """锁定清单：校验 DRAFT、非空、引用可查且内容指纹未漂移。"""
+
+    tasklist_id = command.tasklist_id
     with uow:
         tasklist = _require(uow, tasklist_id, for_update=True)
         if not tasklist.is_editable:
@@ -107,43 +141,55 @@ def lock_list(
             raise EmptyList(tasklist_id=tasklist_id)
 
         items = tasklist.items
-        refs = [(item.use_case_id, item.use_case_version) for item in items]
-        version_map = uow.cases.get_versions(refs)
+        refs = [item.revision_key for item in items]
+        version_map = uow.testpoints.get_revisions(refs)
 
         missing: list[dict[str, Any]] = []
         changed: list[dict[str, Any]] = []
         for item in items:
-            found = version_map.get((item.use_case_id, item.use_case_version))
+            found = version_map.get(item.revision_key)
             if found is None:
                 missing.append(
                     {
-                        "use_case_id": item.use_case_id,
-                        "use_case_version": item.use_case_version,
-                        "code": ErrorCode.VERSION_NOT_FOUND.value,
+                        "testpoint_id": item.testpoint_id,
+                        "revision_ver": item.revision_ver,
+                        "code": ErrorCode.REVISION_NOT_FOUND.value,
                     }
                 )
-            elif found.content_hash != item.content_hash:
+                continue
+            current_hash = _payload_hash(
+                uow, item.testpoint_id, item.revision_ver
+            )
+            if current_hash is None:
+                missing.append(
+                    {
+                        "testpoint_id": item.testpoint_id,
+                        "revision_ver": item.revision_ver,
+                        "code": ErrorCode.REVISION_NOT_FOUND.value,
+                    }
+                )
+            elif current_hash != item.content_hash:
                 # 已发布版本应当永久只读；同版本指纹变化说明前提被破坏
                 changed.append(
                     {
-                        "use_case_id": item.use_case_id,
-                        "use_case_version": item.use_case_version,
+                        "testpoint_id": item.testpoint_id,
+                        "revision_ver": item.revision_ver,
                         "stored_content_hash": item.content_hash,
-                        "current_content_hash": found.content_hash,
+                        "current_content_hash": current_hash,
                     }
                 )
 
         if missing:
             raise TaskListError(
-                ErrorCode.VERSION_NOT_FOUND,
-                "清单中存在用例库已找不到的版本，不能锁定",
+                ErrorCode.REVISION_NOT_FOUND,
+                "清单中存在用例库已找不到的修订，不能锁定",
                 tasklist_id=tasklist_id,
                 details={"items": missing},
             )
         if changed:
             raise TaskListError(
-                ErrorCode.CASE_CONTENT_CHANGED,
-                "同版本用例内容指纹发生变化（违反已发布版本只读前提），不能锁定",
+                ErrorCode.TESTPOINT_CONTENT_CHANGED,
+                "同修订内容指纹发生变化（违反已发布修订只读前提），不能锁定",
                 tasklist_id=tasklist_id,
                 details={"items": changed},
             )
@@ -163,13 +209,16 @@ def lock_list(
 # 编辑（仅 DRAFT）
 # ===========================================================================
 def add_items(
-    uow: AbstractUnitOfWork,
-    tasklist_id: str,
-    use_case_ids: Sequence[str] | str,
-    pin_versions: dict[str, int] | None = None,
+    uow: AbstractUnitOfWork, command: AddItems
 ) -> dict[str, Any]:
-    ids = _normalize_ids(use_case_ids)
-    pins = _normalize_pins(pin_versions)
+    """批量加入测试点；条目级失败进 rejected，不中断整批。
+
+    ``pin_versions`` 可选指定修订号；修订号在用例库中全局唯一。
+    """
+
+    tasklist_id = command.tasklist_id
+    ids = _normalize_ids(command.testpoint_ids)
+    pins = _normalize_pins(command.pin_versions)
 
     with uow:
         tasklist = _require(uow, tasklist_id, for_update=True)
@@ -177,7 +226,7 @@ def add_items(
 
         accepted, rejected, warnings = _collect_new_refs(uow, tasklist, ids, pins)
         if accepted:
-            tasklist.add_case_refs(accepted)
+            tasklist.add_testpoint_refs(accepted)
             uow.tasklists.save(tasklist)
             uow.commit()
 
@@ -191,20 +240,21 @@ def add_items(
 
 
 def remove_items(
-    uow: AbstractUnitOfWork,
-    tasklist_id: str,
-    use_case_ids: Sequence[str] | str,
+    uow: AbstractUnitOfWork, command: RemoveItems
 ) -> dict[str, Any]:
-    ids = _normalize_ids(use_case_ids)
+    """按 testpoint_id 删除；真实删除的进 removed，其余进 not_found。"""
+
+    tasklist_id = command.tasklist_id
+    ids = _normalize_ids(command.testpoint_ids)
 
     with uow:
         tasklist = _require(uow, tasklist_id, for_update=True)
         tasklist.ensure_draft()
 
-        existing = {item.use_case_id for item in tasklist.items}
-        removed = tasklist.remove_case_refs(ids)
+        existing = {item.testpoint_id for item in tasklist.items}
+        removed = tasklist.remove_testpoint_refs(ids)
         not_found = [
-            case_id for case_id in dict.fromkeys(ids) if case_id not in existing
+            testpoint_id for testpoint_id in dict.fromkeys(ids) if testpoint_id not in existing
         ]
 
         if removed:
@@ -219,14 +269,15 @@ def remove_items(
         }
 
 
-def rename_list(
-    uow: AbstractUnitOfWork, tasklist_id: str, tasklist_title: str | None
+def rename_tasklist(
+    uow: AbstractUnitOfWork, command: RenameTaskList
 ) -> dict[str, Any]:
     """元数据修改：锁定后仍可改，且不影响 content_hash / rev。"""
 
+    tasklist_id = command.tasklist_id
     with uow:
         tasklist = _require(uow, tasklist_id, for_update=True)
-        tasklist.rename(tasklist_title)
+        tasklist.rename(command.tasklist_title)
         uow.tasklists.save(tasklist)
         uow.commit()
         return {
@@ -239,23 +290,23 @@ def rename_list(
 # 读取
 # ===========================================================================
 def get_tasklist(
-    uow: AbstractUnitOfWork, tasklist_id: str
+    uow: AbstractUnitOfWork, command: GetTaskList
 ) -> dict[str, Any]:
-    """只读接口：与 preview 共用条目投影。
+    """只读接口：返回清单冻结的内容，不做版本解析。
 
-    resolved_version 是读取时关联出的展示信息，不写回清单；
-    清单的权威版本始终是 case_ref 里的 (use_case_id, use_case_version)。
+    条目的权威版本始终是 testpoint_ref 里的 (testpoint_id, revision_ver)；
+    “当前最新已冻结修订”只在 preview 的诊断里出现，不写回清单。
     """
 
     with uow:
-        tasklist = _require(uow, tasklist_id)
+        tasklist = _require(uow, command.tasklist_id)
         item_views, _, _ = views.project_items(
             tasklist,
             tasklist.items,
-            uow.cases,
+            uow.testpoints,
             uow.history,
             diagnostic=False,
-            resolve=True,
+            resolve=False,
         )
         return {
             **tasklist.to_dict(),
@@ -264,19 +315,14 @@ def get_tasklist(
         }
 
 
-# design_1.md 沿用了 get_list 这个名字；保留别名，两个名字行为一致
-get_list = get_tasklist
-
-
-def preview(
-    uow: AbstractUnitOfWork,
-    tasklist_id: str,
-    view: str = "full",
-    page: int = 1,
-    page_size: int | None = None,
+def preview_tasklist(
+    uow: AbstractUnitOfWork, command: PreviewTaskList
 ) -> dict[str, Any]:
-    """只报告问题、不拦截；拦截留给 lock_list。无副作用，可反复调用。"""
+    """只报告问题、不拦截；拦截留给 lock_tasklist。无副作用，可反复调用。"""
 
+    view = command.view
+    page = command.page
+    page_size = command.page_size
     if view not in ("full", "summary"):
         raise InvalidArgument("view 只能是 full 或 summary")
     if isinstance(page, bool) or not isinstance(page, int) or page < 1:
@@ -289,12 +335,12 @@ def preview(
         raise InvalidArgument("page_size 必须是 >= 1 的整数")
 
     with uow:
-        tasklist = _require(uow, tasklist_id)
+        tasklist = _require(uow, command.tasklist_id)
         items = tasklist.items
         item_views, diagnostics, durations = views.project_items(
             tasklist,
             items,
-            uow.cases,
+            uow.testpoints,
             uow.history,
             diagnostic=True,
             resolve=True,
@@ -305,7 +351,7 @@ def preview(
                 0,
                 {
                     "code": ErrorCode.EMPTY_LIST.value,
-                    "use_case_id": None,
+                    "testpoint_id": None,
                     "message": "空清单不允许锁定",
                 },
             )
@@ -313,8 +359,8 @@ def preview(
         result: dict[str, Any] = {
             "tasklist_id": tasklist.tasklist_id,
             "status": tasklist.status.value,
-            "target_software_release_version": (
-                tasklist.target_software_release_version
+            "project_version": (
+                tasklist.project_version
             ),
             "tasklist_title": tasklist.tasklist_title,
             "rev": tasklist.rev,
@@ -338,8 +384,11 @@ def preview(
 
 
 def list_tasklists(
-    uow: AbstractUnitOfWork, status: str | None = None
+    uow: AbstractUnitOfWork, command: ListTaskLists
 ) -> list[dict[str, Any]]:
+    """列出当前项目的清单摘要，可按 DRAFT/LOCKED 过滤。"""
+
+    status = command.status
     with uow:
         records = uow.tasklists.list_all()
         if status is not None:
@@ -351,33 +400,32 @@ def list_tasklists(
 # ===========================================================================
 # 与执行器协作：把锁定清单导出为 TestCase JSON（可选能力）
 # ===========================================================================
-def export_cases(
-    uow: AbstractUnitOfWork, tasklist_id: str
-) -> list[dict[str, Any]]:
-    """按 seq 顺序返回用例正文，可直接交给 ``demo.executor.CaseExecutor``。
+def export_testpoints(
+    uow: AbstractUnitOfWork, command: ExportTestPoints
+) -> list[Any]:
+    """按 seq 顺序返回测试点实现正文，可直接交给执行器。
 
     只要求锁定清单：状态一旦 LOCKED，条目与指纹都不会再变，
     执行的就是被审核过的那一份内容。
     """
 
+    tasklist_id = command.tasklist_id
     with uow:
         tasklist = _require(uow, tasklist_id)
         if tasklist.status is not Status.LOCKED:
             raise ListNotLocked(tasklist_id)
 
-        getter = getattr(uow.cases, "get_case_payload", None)
-        if not callable(getter):
-            raise ExportUnsupported(tasklist_id)
-
-        payloads: list[dict[str, Any]] = []
+        payloads: list[Any] = []
         missing: list[dict[str, Any]] = []
         for item in tasklist.items:
-            payload = getter(item.use_case_id, item.use_case_version)
+            payload = uow.testpoints.get_testpoint_payload(
+                item.testpoint_id, item.revision_ver
+            )
             if payload is None:
                 missing.append(
                     {
-                        "use_case_id": item.use_case_id,
-                        "use_case_version": item.use_case_version,
+                        "testpoint_id": item.testpoint_id,
+                        "revision_ver": item.revision_ver,
                     }
                 )
             else:
@@ -385,8 +433,8 @@ def export_cases(
 
         if missing:
             raise TaskListError(
-                ErrorCode.VERSION_NOT_FOUND,
-                "清单中部分用例在用例库适配器里没有正文，无法导出",
+                ErrorCode.REVISION_NOT_FOUND,
+                "清单中部分测试点在用例库适配器里没有正文，无法导出",
                 tasklist_id=tasklist_id,
                 details={"items": missing},
             )
@@ -399,78 +447,89 @@ def export_cases(
 def _copy_refs(
     uow: AbstractUnitOfWork,
     source: TaskList,
-    target: int,
+    project_version: str,
     copy_mode: CopyMode,
-) -> tuple[list[CaseRef], list[dict[str, str]], list[dict[str, str]]]:
+) -> tuple[list[TestPointRef], list[dict[str, str]], list[dict[str, str]]]:
     """复制时把来源条目转换成新草稿的引用。
 
     RERESOLVE 必须在复制这一刻完成解析并写入草稿，不能推迟到锁定：
     否则人工审核看到的是版本 4，锁定后变成版本 6。
     """
 
-    accepted: list[CaseRef] = []
+    accepted: list[TestPointRef] = []
     rejected: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
     source_items = source.items
 
     if copy_mode is CopyMode.RERESOLVE:
-        ids = [item.use_case_id for item in source_items]
-        outcomes = uow.cases.resolve_versions(ids, target)
+        ids = [item.testpoint_id for item in source_items]
+        outcomes = uow.testpoints.resolve_revisions(ids, project_version)
         for item in source_items:
-            outcome = outcomes.get(item.use_case_id)
+            outcome = outcomes.get(item.testpoint_id)
             if outcome is None or not outcome.ok:
                 code = (
                     outcome.code
                     if outcome is not None
-                    else ErrorCode.CASE_NOT_FOUND.value
+                    else ErrorCode.TESTPOINT_NOT_FOUND.value
                 )
-                rejected.append(rejection(item.use_case_id, code))
+                rejected.append(rejection(item.testpoint_id, code))
             else:
-                version = outcome.version
+                revision = outcome.revision
+                content_hash = _payload_hash(
+                    uow, item.testpoint_id, revision.revision_ver
+                )
+                if content_hash is None:
+                    rejected.append(
+                        rejection(
+                            item.testpoint_id,
+                            ErrorCode.REVISION_NOT_FOUND.value,
+                        )
+                    )
+                    continue
                 accepted.append(
-                    CaseRef(
-                        use_case_id=item.use_case_id,
-                        use_case_version=version.use_case_version,
-                        content_hash=version.content_hash,
+                    TestPointRef(
+                        testpoint_id=item.testpoint_id,
+                        revision_ver=revision.revision_ver,
+                        content_hash=content_hash,
                         pinned=False,
+                        title=revision.title,
                     )
                 )
         return accepted, rejected, warnings
 
-    refs = [
-        (item.use_case_id, item.use_case_version) for item in source_items
-    ]
-    version_map = uow.cases.get_versions(refs)
-    briefs = uow.cases.get_case_briefs(
-        [item.use_case_id for item in source_items]
-    )
+    refs = [item.revision_key for item in source_items]
+    version_map = uow.testpoints.get_revisions(refs)
     for item in source_items:
-        if item.use_case_id not in briefs:
-            rejected.append(
-                rejection(item.use_case_id, ErrorCode.CASE_NOT_FOUND.value)
-            )
-            continue
-        found = version_map.get((item.use_case_id, item.use_case_version))
+        found = version_map.get(item.revision_key)
         if found is None:
             rejected.append(
-                rejection(item.use_case_id, ErrorCode.VERSION_NOT_FOUND.value)
+                rejection(item.testpoint_id, ErrorCode.REVISION_NOT_FOUND.value)
+            )
+            continue
+        content_hash = _payload_hash(
+            uow, item.testpoint_id, item.revision_ver
+        )
+        if content_hash is None:
+            rejected.append(
+                rejection(item.testpoint_id, ErrorCode.REVISION_NOT_FOUND.value)
             )
             continue
         accepted.append(
-            CaseRef(
-                use_case_id=item.use_case_id,
-                use_case_version=item.use_case_version,
-                content_hash=found.content_hash,
+            TestPointRef(
+                testpoint_id=item.testpoint_id,
+                revision_ver=item.revision_ver,
+                content_hash=content_hash,
                 pinned=True,
+                title=found.title,
             )
         )
 
-    if target != source.target_software_release_version:
+    if project_version != source.project_version:
         warnings.append(
             {
-                "code": "TARGET_CHANGED",
+                "code": "PROJECT_VERSION_CHANGED",
                 "message": (
-                    "PINNED 复制保留了原版本，但目标版本与来源清单不同；"
+                    "PINNED 复制保留了原修订，但项目版本与来源清单不同；"
                     "请确认这是有意为之"
                 ),
             }
@@ -483,83 +542,103 @@ def _collect_new_refs(
     tasklist: TaskList,
     ids: list[str],
     pins: dict[str, int],
-) -> tuple[list[CaseRef], list[dict[str, str]], list[dict[str, str]]]:
+) -> tuple[list[TestPointRef], list[dict[str, str]], list[dict[str, str]]]:
     """逐条判断能否加入；失败的放进 rejected，不抛异常。"""
 
-    existing = {item.use_case_id for item in tasklist.items}
-    briefs = uow.cases.get_case_briefs(ids) if ids else {}
+    existing = {item.testpoint_id for item in tasklist.items}
+    briefs = uow.testpoints.get_testpoint_briefs(ids) if ids else {}
     resolve_ids = [
-        case_id for case_id in ids if case_id not in existing and case_id not in pins
+        testpoint_id for testpoint_id in ids if testpoint_id not in existing and testpoint_id not in pins
     ]
     outcomes = (
-        uow.cases.resolve_versions(
-            resolve_ids, tasklist.target_software_release_version
+        uow.testpoints.resolve_revisions(
+            resolve_ids, tasklist.project_version
         )
         if resolve_ids
         else {}
     )
     pin_refs = [
-        (case_id, pins[case_id])
-        for case_id in ids
-        if case_id not in existing and case_id in pins
+        (testpoint_id, pins[testpoint_id])
+        for testpoint_id in ids
+        if testpoint_id not in existing and testpoint_id in pins
     ]
-    pinned_versions = (
-        uow.cases.get_versions(pin_refs) if pin_refs else {}
+    pinned_revisions = (
+        uow.testpoints.get_revisions(pin_refs) if pin_refs else {}
     )
 
-    accepted: list[CaseRef] = []
+    accepted: list[TestPointRef] = []
     rejected: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
     seen: set[str] = set()
 
-    for case_id in ids:
-        if case_id in seen or case_id in existing:
-            rejected.append(rejection(case_id, ErrorCode.DUPLICATE.value))
-        elif case_id not in briefs:
-            rejected.append(rejection(case_id, ErrorCode.CASE_NOT_FOUND.value))
-        elif case_id in pins:
-            found = pinned_versions.get((case_id, pins[case_id]))
+    for testpoint_id in ids:
+        if testpoint_id in seen or testpoint_id in existing:
+            rejected.append(rejection(testpoint_id, ErrorCode.DUPLICATE.value))
+        elif testpoint_id not in briefs:
+            rejected.append(rejection(testpoint_id, ErrorCode.TESTPOINT_NOT_FOUND.value))
+        elif testpoint_id in pins:
+            found = pinned_revisions.get((testpoint_id, pins[testpoint_id]))
             if found is None:
                 rejected.append(
                     rejection(
-                        case_id,
-                        ErrorCode.VERSION_NOT_FOUND.value,
-                        f"指定版本 v{pins[case_id]} 不存在",
+                        testpoint_id,
+                        ErrorCode.REVISION_NOT_FOUND.value,
+                        f"指定修订 r{pins[testpoint_id]} 不存在",
                     )
                 )
             else:
-                accepted.append(
-                    CaseRef(
-                        use_case_id=case_id,
-                        use_case_version=found.use_case_version,
-                        content_hash=found.content_hash,
-                        pinned=True,
-                    )
+                content_hash = _payload_hash(
+                    uow, testpoint_id, found.revision_ver
                 )
-                if found.status == "deprecated":
-                    warnings.append(
-                        rejection(case_id, ErrorCode.DEPRECATED_REF.value)
+                if content_hash is None:
+                    rejected.append(
+                        rejection(
+                            testpoint_id,
+                            ErrorCode.REVISION_NOT_FOUND.value,
+                        )
+                    )
+                else:
+                    accepted.append(
+                        TestPointRef(
+                            testpoint_id=testpoint_id,
+                            revision_ver=found.revision_ver,
+                            content_hash=content_hash,
+                            pinned=True,
+                            title=found.title,
+                        )
                     )
         else:
-            outcome = outcomes.get(case_id)
+            outcome = outcomes.get(testpoint_id)
             if outcome is None or not outcome.ok:
                 code = (
                     outcome.code
                     if outcome is not None
-                    else ErrorCode.CASE_NOT_FOUND.value
+                    else ErrorCode.TESTPOINT_NOT_FOUND.value
                 )
-                rejected.append(rejection(case_id, code))
+                rejected.append(rejection(testpoint_id, code))
             else:
-                version = outcome.version
-                accepted.append(
-                    CaseRef(
-                        use_case_id=case_id,
-                        use_case_version=version.use_case_version,
-                        content_hash=version.content_hash,
-                        pinned=False,
-                    )
+                revision = outcome.revision
+                content_hash = _payload_hash(
+                    uow, testpoint_id, revision.revision_ver
                 )
-        seen.add(case_id)
+                if content_hash is None:
+                    rejected.append(
+                        rejection(
+                            testpoint_id,
+                            ErrorCode.REVISION_NOT_FOUND.value,
+                        )
+                    )
+                else:
+                    accepted.append(
+                        TestPointRef(
+                            testpoint_id=testpoint_id,
+                            revision_ver=revision.revision_ver,
+                            content_hash=content_hash,
+                            pinned=False,
+                            title=revision.title,
+                        )
+                    )
+        seen.add(testpoint_id)
 
     return accepted, rejected, warnings
 
@@ -567,6 +646,8 @@ def _collect_new_refs(
 def _require(
     uow: AbstractUnitOfWork, tasklist_id: str, *, for_update: bool = False
 ) -> TaskList:
+    """取清单；不存在统一翻译成 ListNotFound。"""
+
     tasklist = (
         uow.tasklists.get_for_update(tasklist_id)
         if for_update
@@ -577,7 +658,29 @@ def _require(
     return tasklist
 
 
+def _payload_hash(
+    uow: AbstractUnitOfWork, testpoint_id: str, revision_ver: int
+) -> str | None:
+    """TaskList 自己计算内容指纹；用例库只提供实现正文。"""
+
+    payload = uow.testpoints.get_testpoint_payload(testpoint_id, revision_ver)
+    if payload is None:
+        return None
+    return compute_testpoint_content_hash(payload)
+
+
+def _require_project_version(
+    dep: ProjectVersionLookup, project_id: str, proj_ver: str
+) -> None:
+    """端口只读不可变事实；必须在写操作之前调用。"""
+
+    if not dep.project_version_exists(project_id, proj_ver):
+        raise ProjectVersionNotFound(project_id, proj_ver)
+
+
 def _normalize_mode(mode: str | CopyMode) -> CopyMode:
+    """复制模式只接受 RERESOLVE / PINNED，大小写不敏感。"""
+
     try:
         return CopyMode(str(mode).upper())
     except ValueError as exc:
@@ -586,13 +689,15 @@ def _normalize_mode(mode: str | CopyMode) -> CopyMode:
         ) from exc
 
 
-def _normalize_ids(use_case_ids: Sequence[str] | str) -> list[str]:
-    raw = [use_case_ids] if isinstance(use_case_ids, str) else list(use_case_ids)
+def _normalize_ids(testpoint_ids: Sequence[str] | str) -> list[str]:
+    """允许单字符串或序列；拒绝空 id。"""
+
+    raw = [testpoint_ids] if isinstance(testpoint_ids, str) else list(testpoint_ids)
     ids: list[str] = []
-    for case_id in raw:
-        if not isinstance(case_id, str) or not case_id:
-            raise InvalidArgument("use_case_id 必须是非空字符串")
-        ids.append(case_id)
+    for testpoint_id in raw:
+        if not isinstance(testpoint_id, str) or not testpoint_id:
+            raise InvalidArgument("testpoint_id 必须是非空字符串")
+        ids.append(testpoint_id)
     return ids
 
 
@@ -600,15 +705,15 @@ def _normalize_pins(pin_versions: dict[str, int] | None) -> dict[str, int]:
     if pin_versions is None:
         return {}
     if not isinstance(pin_versions, dict):
-        raise InvalidArgument("pin_versions 必须是 {use_case_id: version}")
+        raise InvalidArgument("pin_versions 必须是 {testpoint_id: 修订号}")
 
     pins: dict[str, int] = {}
-    for case_id, version in pin_versions.items():
-        if not isinstance(case_id, str) or not case_id:
+    for testpoint_id, value in pin_versions.items():
+        if not isinstance(testpoint_id, str) or not testpoint_id:
             raise InvalidArgument("pin_versions 的键必须是非空字符串")
-        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise InvalidArgument(
-                f"pin_versions[{case_id!r}] 必须是 >= 1 的整数"
+                f"pin_versions[{testpoint_id!r}] 的修订号必须 >= 1"
             )
-        pins[case_id] = version
+        pins[testpoint_id] = value
     return pins

@@ -16,22 +16,20 @@ from typing import Any
 
 
 class ErrorCode(StrEnum):
-    TARGET_MISSING = "TARGET_MISSING"                # 创建清单时未指定目标版本
-    LIST_NOT_FOUND = "LIST_NOT_FOUND"                # 清单不存在
-    LIST_LOCKED = "LIST_LOCKED"                      # 对已锁定清单做编辑操作
-    EMPTY_LIST = "EMPTY_LIST"                        # 空清单不允许锁定
-    DUPLICATE = "DUPLICATE"                          # 用例已在清单中
-    CASE_NOT_FOUND = "CASE_NOT_FOUND"                # 用例库中无此用例
-    NO_APPLICABLE_VERSION = "NO_APPLICABLE_VERSION"  # 目标版本下用例无适用版本
-    VERSION_NOT_FOUND = "VERSION_NOT_FOUND"          # pin 指定 / 引用的版本不存在
-    DEPRECATED_REF = "DEPRECATED_REF"                # 引用了已废弃版本（警告）
-    SUPERSEDED = "SUPERSEDED"                        # 存在更新的适用版本（警告）
-    REV_CONFLICT = "REV_CONFLICT"                    # 预留，原型未启用
+    PROJECT_VERSION_MISSING = "PROJECT_VERSION_MISSING"     # 创建清单时未指定项目版本
+    PROJECT_VERSION_NOT_FOUND = "PROJECT_VERSION_NOT_FOUND"  # Access 中没有该项目的该版本
+    LIST_NOT_FOUND = "LIST_NOT_FOUND"                       # 清单不存在
+    LIST_LOCKED = "LIST_LOCKED"                             # 对已锁定清单做编辑操作
+    EMPTY_LIST = "EMPTY_LIST"                               # 空清单不允许锁定
+    DUPLICATE = "DUPLICATE"                                 # 测试点已在清单中
+    TESTPOINT_NOT_FOUND = "TESTPOINT_NOT_FOUND"             # 用例库中无此测试点
+    NO_APPLICABLE_REVISION = "NO_APPLICABLE_REVISION"       # 项目版本下没有可用修订
+    REVISION_NOT_FOUND = "REVISION_NOT_FOUND"               # 指定 / 引用的修订不存在
+    TESTPOINT_CONTENT_CHANGED = "TESTPOINT_CONTENT_CHANGED"  # 同修订内容指纹变化
+    SUPERSEDED = "SUPERSEDED"                               # 存在更新的适用修订（警告）
 
-    INVALID_ARGUMENT = "INVALID_ARGUMENT"            # 参数形状不合法（非业务错误）
-    CASE_CONTENT_CHANGED = "CASE_CONTENT_CHANGED"    # 同版本内容指纹变化，违反只读前提
-    LIST_NOT_LOCKED = "LIST_NOT_LOCKED"              # 导出执行用例要求清单已锁定
-    EXPORT_UNSUPPORTED = "EXPORT_UNSUPPORTED"        # 用例库适配器不提供用例正文
+    INVALID_ARGUMENT = "INVALID_ARGUMENT"                   # 参数形状不合法（非业务错误）
+    LIST_NOT_LOCKED = "LIST_NOT_LOCKED"                     # 导出执行要求清单已锁定
 
 
 class TaskListError(Exception):
@@ -72,17 +70,29 @@ class InvalidArgument(TaskListError):
         super().__init__(ErrorCode.INVALID_ARGUMENT, message)
 
 
-class TargetMissing(TaskListError):
+class ProjectVersionMissing(TaskListError):
     def __init__(self) -> None:
         super().__init__(
-            ErrorCode.TARGET_MISSING, "创建清单时必须指定目标软件版本"
+            ErrorCode.PROJECT_VERSION_MISSING, "创建清单时必须指定项目版本"
+        )
+
+
+class ProjectVersionNotFound(TaskListError):
+    """Access 中不存在该项目的该版本。"""
+
+    def __init__(self, project_id: str, proj_ver: str) -> None:
+        self.project_id = project_id
+        self.proj_ver = proj_ver
+        super().__init__(
+            ErrorCode.PROJECT_VERSION_NOT_FOUND,
+            f"项目 {project_id} 没有版本 {proj_ver}",
         )
 
 
 class ListLocked(TaskListError):
     def __init__(
         self,
-        message: str = "清单已锁定，不能编辑用例",
+        message: str = "清单已锁定，不能编辑条目",
         *,
         tasklist_id: str | None = None,
     ) -> None:
@@ -97,9 +107,9 @@ class EmptyList(TaskListError):
 
 
 class DuplicateItem(TaskListError):
-    def __init__(self, case_id: str) -> None:
+    def __init__(self, testpoint_id: str) -> None:
         super().__init__(
-            ErrorCode.DUPLICATE, f"用例 {case_id} 已在清单中"
+            ErrorCode.DUPLICATE, f"测试点 {testpoint_id} 已在清单中"
         )
 
 
@@ -122,35 +132,25 @@ class ListNotLocked(TaskListError):
         )
 
 
-class ExportUnsupported(TaskListError):
-    def __init__(self, tasklist_id: str) -> None:
-        super().__init__(
-            ErrorCode.EXPORT_UNSUPPORTED,
-            "当前用例库适配器不提供用例正文，无法导出执行输入",
-            tasklist_id=tasklist_id,
-        )
-
-
 # ---------------------------------------------------------------------------
 # 条目级反馈：不抛异常，放进返回值
 # ---------------------------------------------------------------------------
 REJECT_MESSAGES: dict[str, str] = {
-    ErrorCode.DUPLICATE.value: "该用例已在清单中",
-    ErrorCode.CASE_NOT_FOUND.value: "用例库中无此用例",
-    ErrorCode.NO_APPLICABLE_VERSION.value: "目标版本下无适用版本",
-    ErrorCode.VERSION_NOT_FOUND.value: "指定版本不存在",
-    ErrorCode.DEPRECATED_REF.value: "引用了已废弃版本",
+    ErrorCode.DUPLICATE.value: "该测试点已在清单中",
+    ErrorCode.TESTPOINT_NOT_FOUND.value: "用例库中无此测试点",
+    ErrorCode.NO_APPLICABLE_REVISION.value: "项目版本下没有可用修订",
+    ErrorCode.REVISION_NOT_FOUND.value: "指定修订不存在",
 }
 
 
 def rejection(
-    case_id: str, code: ErrorCode | str, message: str | None = None
+    testpoint_id: str, code: ErrorCode | str, message: str | None = None
 ) -> dict[str, str]:
     """构造 ``rejected`` / ``warnings`` 中的一条结构化反馈。"""
 
     code_str = str(code)
     return {
-        "use_case_id": case_id,
+        "testpoint_id": testpoint_id,
         "code": code_str,
         "message": message or REJECT_MESSAGES.get(code_str, code_str),
     }

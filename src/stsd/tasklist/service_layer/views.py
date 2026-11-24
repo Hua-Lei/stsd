@@ -15,24 +15,24 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from stsd.tasklist.domain.model import TaskList, TaskListItem
-from stsd.tasklist.errors import REJECT_MESSAGES, ErrorCode
-from stsd.tasklist.ports import CaseLibraryPort, DurationStat, RunHistoryPort
+from ..domain.hashing import compute_testpoint_content_hash
+from ..domain.model import TaskList, TaskListItem
+from ..domain.errors import ErrorCode, REJECT_MESSAGES
+from ..ports import TestPointLibraryPort, DurationStat, RunHistoryPort
 
 # 提示 flag（读取时计算，不入库）
 FLAG_PINNED = "PINNED"
 FLAG_SUPERSEDED = "SUPERSEDED"
-FLAG_DEPRECATED = "DEPRECATED_REF"
 FLAG_STALE = "STALE_EXPERIENCE"
 FLAG_DURATION_UNKNOWN = "DURATION_UNKNOWN"
-FLAG_CONTENT_CHANGED = "CASE_CONTENT_CHANGED"
-FLAG_VERSION_MISSING = "VERSION_NOT_FOUND"
+FLAG_CONTENT_CHANGED = "TESTPOINT_CONTENT_CHANGED"
+FLAG_REVISION_MISSING = "REVISION_NOT_FOUND"
 
 
 def project_items(
     tasklist: TaskList,
     items: Sequence[TaskListItem],
-    cases: CaseLibraryPort,
+    testpoints: TestPointLibraryPort,
     history: RunHistoryPort | None,
     *,
     diagnostic: bool,
@@ -44,21 +44,21 @@ def project_items(
 ]:
     """preview 与 get_tasklist 共用的条目投影。
 
-    共同部分：seq / case_ref / title / requirement_ids / risk_level。
-    ``resolve=True`` 时额外计算 resolved_version（preview 的诊断需要）；
-    get_tasklist 也带上它，但只作为读取时的展示信息，不写回清单。
+    共同部分：seq / testpoint_ref / title。
+    ``resolve=True`` 时额外计算 latest_frozen_revision（仅 preview 的诊断使用）；
+    get_tasklist 不传 resolve，条目里只有清单冻结的修订。
     ``diagnostic=True`` 时再附加 last_run、flags 与诊断。
     """
 
-    ids = [item.use_case_id for item in items]
-    refs = [(item.use_case_id, item.use_case_version) for item in items]
-    briefs = cases.get_case_briefs(ids) if ids else {}
+    ids = [item.testpoint_id for item in items]
+    refs = [item.revision_key for item in items]
+    briefs = testpoints.get_testpoint_briefs(ids) if ids else {}
     outcomes = (
-        cases.resolve_versions(ids, tasklist.target_software_release_version)
+        testpoints.resolve_revisions(ids, tasklist.project_version)
         if resolve and ids
         else {}
     )
-    versions = cases.get_versions(refs) if refs else {}
+    versions = testpoints.get_revisions(refs) if refs else {}
 
     last_results: dict[str, Any] = {}
     durations: dict[str, DurationStat] = {}
@@ -71,97 +71,103 @@ def project_items(
     warnings: list[dict[str, Any]] = []
 
     for item in items:
-        stored = versions.get((item.use_case_id, item.use_case_version))
-        outcome = outcomes.get(item.use_case_id)
-        resolved_version = (
-            outcome.version.use_case_version
+        stored = versions.get(item.revision_key)
+        outcome = outcomes.get(item.testpoint_id)
+        latest_frozen_revision = (
+            outcome.revision.revision_ver
             if outcome is not None and outcome.ok
             else None
         )
-        brief = briefs.get(item.use_case_id)
+        brief = briefs.get(item.testpoint_id)
 
         view: dict[str, Any] = {
             "seq": item.seq,
-            "case_ref": item.case_ref.to_dict(),
+            "testpoint_ref": item.testpoint_ref.to_dict(),
             "title": brief.title
             if brief is not None
-            else (stored.title if stored is not None else None),
-            "requirement_ids": list(brief.requirement_ids)
-            if brief is not None
-            else (list(stored.requirement_ids) if stored is not None else []),
-            "risk_level": brief.risk_level
-            if brief is not None
-            else (stored.risk_level if stored is not None else None),
+            else (
+                stored.title
+                if stored is not None
+                else item.testpoint_ref.title
+            ),
         }
         if resolve:
-            view["resolved_version"] = resolved_version
+            view["latest_frozen_revision"] = latest_frozen_revision
 
         if not diagnostic:
             views.append(view)
             continue
 
         flags: list[str] = []
-        if item.case_ref.pinned:
+        if item.testpoint_ref.pinned:
             flags.append(FLAG_PINNED)
 
         if stored is None:
-            flags.append(FLAG_VERSION_MISSING)
+            flags.append(FLAG_REVISION_MISSING)
             errors.append(
                 {
-                    "code": ErrorCode.VERSION_NOT_FOUND.value,
-                    "use_case_id": item.use_case_id,
-                    "message": "清单引用的版本在用例库中不存在",
+                    "code": ErrorCode.REVISION_NOT_FOUND.value,
+                    "testpoint_id": item.testpoint_id,
+                    "message": "清单引用的修订在用例库中不存在",
                 }
             )
         else:
-            if stored.status == "deprecated":
-                flags.append(FLAG_DEPRECATED)
-                warnings.append(
+            payload = testpoints.get_testpoint_payload(
+                item.testpoint_id, item.revision_ver
+            )
+            current_hash = (
+                compute_testpoint_content_hash(payload)
+                if payload is not None
+                else None
+            )
+            if current_hash is None:
+                flags.append(FLAG_REVISION_MISSING)
+                errors.append(
                     {
-                        "code": ErrorCode.DEPRECATED_REF.value,
-                        "use_case_id": item.use_case_id,
-                        "message": REJECT_MESSAGES[ErrorCode.DEPRECATED_REF.value],
+                        "code": ErrorCode.REVISION_NOT_FOUND.value,
+                        "testpoint_id": item.testpoint_id,
+                        "message": "无法读取该修订的实现正文",
                     }
                 )
-            if stored.content_hash != item.content_hash:
+            elif current_hash != item.content_hash:
                 flags.append(FLAG_CONTENT_CHANGED)
                 errors.append(
                     {
-                        "code": ErrorCode.CASE_CONTENT_CHANGED.value,
-                        "use_case_id": item.use_case_id,
-                        "message": "同版本用例内容指纹已变化，锁定会被拒绝",
+                        "code": ErrorCode.TESTPOINT_CONTENT_CHANGED.value,
+                        "testpoint_id": item.testpoint_id,
+                        "message": "同修订内容指纹已变化，锁定会被拒绝",
                     }
                 )
 
         if outcome is not None and not outcome.ok:
-            code = outcome.code or ErrorCode.NO_APPLICABLE_VERSION.value
+            code = outcome.code or ErrorCode.NO_APPLICABLE_REVISION.value
             flags.append(code)
             errors.append(
                 {
                     "code": code,
-                    "use_case_id": item.use_case_id,
-                    "message": REJECT_MESSAGES.get(code, "目标版本下无法解析该用例"),
+                    "testpoint_id": item.testpoint_id,
+                    "message": REJECT_MESSAGES.get(code, "目标版本下无法解析该测试点"),
                 }
             )
         elif (
-            resolved_version is not None
-            and resolved_version != item.use_case_version
+            latest_frozen_revision is not None
+            and latest_frozen_revision != item.revision_ver
         ):
-            # design.md 第四节：resolved_version 与 usecase_version 不相等就提示，
+            # 解析结果与清单记录不一致就提示；
             # PINNED 条目同样提示，只是额外带 PINNED 标记供审核区分
             flags.append(FLAG_SUPERSEDED)
             warnings.append(
                 {
                     "code": ErrorCode.SUPERSEDED.value,
-                    "use_case_id": item.use_case_id,
-                    "message": f"存在更新的适用版本 v{resolved_version}",
+                    "testpoint_id": item.testpoint_id,
+                    "message": f"存在更新的适用修订 r{latest_frozen_revision}",
                 }
             )
 
-        last_run = last_results.get(item.use_case_id)
+        last_run = last_results.get(item.testpoint_id)
         if last_run is not None:
             stale = (
-                last_run.use_case_version != item.use_case_version
+                last_run.revision_ver != item.revision_ver
                 or (
                     last_run.content_hash is not None
                     and last_run.content_hash != item.content_hash
@@ -172,12 +178,12 @@ def project_items(
                 warnings.append(
                     {
                         "code": FLAG_STALE,
-                        "use_case_id": item.use_case_id,
+                        "testpoint_id": item.testpoint_id,
                         "message": "上次结果来自不同版本，不能作为跳过依据",
                     }
                 )
             view["last_run"] = {
-                "use_case_version": last_run.use_case_version,
+                "revision_ver": last_run.revision_ver,
                 "status": last_run.status,
                 "run_at": last_run.run_at,
                 "stale": stale,
@@ -185,7 +191,7 @@ def project_items(
         else:
             view["last_run"] = None
 
-        stat = durations.get(item.use_case_id)
+        stat = durations.get(item.testpoint_id)
         if stat is None or stat.samples <= 0:
             flags.append(FLAG_DURATION_UNKNOWN)
             view["duration_median_ms"] = None
@@ -201,10 +207,12 @@ def project_items(
 def summarize(
     items: Sequence[TaskListItem], durations: dict[str, DurationStat]
 ) -> dict[str, Any]:
+    """条目数 / 预计总耗时 / 耗时未知条目数；不修改清单。"""
+
     total_ms = 0.0
     unknown = 0
     for item in items:
-        stat = durations.get(item.use_case_id)
+        stat = durations.get(item.testpoint_id)
         if stat is None or stat.samples <= 0:
             unknown += 1
         else:

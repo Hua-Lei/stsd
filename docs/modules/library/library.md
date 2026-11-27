@@ -22,10 +22,10 @@
 *   `AddTestPoint(actor_id, project_id, section_id, name, proj_ver)` 同时产生第一条修订，`revision_ver` 为 1，描述和实现为空；`section_id` 校验同上，`proj_ver` 经端口确认存在
 *   `DeleteNode(actor_id, node_id)` 软删除该节点及其未删除的后代，返回被删除的节点 id 列表；已删除的节点报错
 *   `ReviseTestPoint(actor_id, testpoint_id, proj_ver, revision_detail)` 产生新的修订，实现为空
-*   `SetImplementation(actor_id, testpoint_id, revision_ver, implementation)` 整包替换草稿修订的实现，文件、依赖、运行声明一次给全；只能用于草稿，可以反复覆盖
+*   `SetImplementation(actor_id, testpoint_id, revision_ver, implementation, files)` 整包替换草稿修订的实现，声明与文件内容一次给全；`files` 是包内路径到文件内容的映射，声明里的 `content_hash` 由用例库按内容校验。只能用于草稿，可以反复覆盖
 *   `AuditAndFreeze(actor_id, testpoint_id, revision_ver)` 把草稿冻结
 
-实现的编辑做成整包替换而不是逐文件操作：它是一次原子写入，和"实现可以覆盖"这条规则对得上，也不必为增、删、改各自重复一遍同一套草稿校验。界面要做单文件保存时再加细粒度操作，领域模型不受影响。
+实现的编辑做成整包替换而不是逐文件操作：它是一次原子写入，和"实现可以覆盖"这条规则对得上，也不必为增、删、改各自重复一遍同一套草稿校验。界面要做单文件保存时再加细粒度操作，领域模型不受影响。实现文件内容不经 SQL 保存，读取统一走 `get_implementation_files`。
 
 ## 读接口
 
@@ -49,7 +49,7 @@
 
 1.  修订的内容产生后不再改动。每条修订保存完整内容，读取任何一条都不依赖其他修订。
 2.  实现只能在草稿状态下设置，整包替换，可以反复覆盖。
-3.  冻结是唯一的闸口，要求实现非空、平台标识已知、`runtime_spec` 指定的 `main_file` 确实在包里、依赖声明合法。冻结之后内容与实现都不可变，冻结不可撤销，再次冻结会报错（见 [decisions/002](../../decisions/002-implementation-and-freeze.md)）。能静态查的都要在这里查完，因为冻结之后没有补救办法。
+3.  冻结是唯一的闸口，要求实现非空、平台标识已知、`runtime_spec` 指定的 `main_file` 确实在包里、依赖声明合法、声明里的文件内容都能取到。冻结之后内容与实现都不可变，冻结不可撤销，再次冻结会报错（见 [decisions/002](../../decisions/002-implementation-and-freeze.md)）。能静态查的都要在这里查完，因为冻结之后没有补救办法。
 4.  任何状态下都可以产生新修订，没有冻结的旧草稿保留，作为历史。
 5.  同一测试点并发产生修订时，`(testpoint_id, revision_ver)` 必须唯一，后到者收到冲突错误。
 6.  内容没有变化的测试点不产生新修订。"内容"指最新修订的名称和描述；未变时 `ReviseTestPoint` 返回最新修订的详情，不产生新修订，也不更新 `proj_ver`。实现的变化不计入，它由 `SetImplementation` 单独管理。

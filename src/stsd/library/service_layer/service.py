@@ -6,9 +6,10 @@
 - 不需要外部端口：``(uow, command)``。
 
 当前 ``AddTestPoint`` 和 ``ReviseTestPoint`` 需要向 Access 确认 ``proj_ver``，
-因此接收 ``dep: ProjectVersionLookup``；其余用例只依赖本模块仓储。
-``command`` 是 ``command.py`` 中定义的命令或读请求对象，承载本次调用的
-全部业务字段。
+因此接收 ``dep: ProjectVersionLookup``；``SetImplementation`` 与
+``get_implementation_files`` 还依赖工作单元上的实现文件存储；其余用例只
+依赖本模块仓储。``command`` 是 ``command.py`` 中定义的命令或读请求对象，
+承载本次调用的全部业务字段。
 
 聚合自己的规则在 ``domain/model.py``；这里只做需要查仓储或查 Access 才能
 判断的跨聚合规则，以及读模型投影。
@@ -17,20 +18,24 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping
 
 from sqlalchemy.exc import IntegrityError
 
 from stsd.library.command import (
-    AddImplementation,
     AddTestPoint,
     AuditAndFreeze,
     CreateSection,
     DeleteNode,
+    GetImplementationFiles,
     GetSectionTree,
     GetTestPointDetail,
     ReviseTestPoint,
+    SetImplementation,
 )
 from stsd.library.domain.errors import (
+    ImplementationInvalid,
+    ImplementationRequired,
     InvalidArgument,
     NodeDeleted,
     NodeNotFound,
@@ -38,6 +43,7 @@ from stsd.library.domain.errors import (
     NotATestPoint,
     ProjectVersionNotFound,
     RevisionConflict,
+    RevisionFrozen,
     RevisionNotFound,
 )
 from stsd.library.domain.model import (
@@ -54,6 +60,12 @@ from stsd.library.service_layer.views import (
     TestPointDetail,
     TestPointTreeNode,
     TreeNode,
+)
+from stsd.shared.implementation import (
+    Implementation,
+    InvalidImplementation,
+    package_from_files,
+    validate_implementation,
 )
 
 
@@ -169,17 +181,23 @@ def revise_testpoint(uow: AbstractUnitOfWork, dep: ProjectVersionLookup,
         return _detail(testpoint, revision)
 
 
-def add_implementation(uow: AbstractUnitOfWork,
-                       command: AddImplementation) -> TestPointDetail:
-    '''AddImplementation：为草稿修订补充实现，可以覆盖。'''
+def set_implementation(uow: AbstractUnitOfWork,
+                       command: SetImplementation) -> TestPointDetail:
+    '''SetImplementation：为草稿修订整包设置或覆盖实现。'''
     _require_actor(command.actor_id)
-    code_impl = _require_implementation(command.code_impl)
+    implementation = _require_implementation(command.implementation)
+    files = _require_implementation_files(
+        command.files, implementation
+    )
 
     with uow:
         testpoint = _require_testpoint(uow, command.testpoint_id)
-        revision = testpoint.add_implementation(
-            command.revision_ver, code_impl, command.actor_id
+        revision = testpoint.set_implementation(
+            command.revision_ver, implementation, command.actor_id
         )
+        # 内容先落盘，声明随后与事务一起提交；提交失败最多留下孤儿内容。
+        for item in implementation.source.files:
+            uow.files.put(files[item.path])
         uow.library.save(testpoint)
         uow.commit()
         return _detail(testpoint, revision)
@@ -187,11 +205,28 @@ def add_implementation(uow: AbstractUnitOfWork,
 
 def audit_and_freeze(uow: AbstractUnitOfWork,
                      command: AuditAndFreeze) -> TestPointDetail:
-    '''AuditAndFreeze：审计并冻结草稿；冻结要求实现非空。'''
+    '''AuditAndFreeze：审计并冻结草稿；冻结要求实现完整且文件可读。'''
     _require_actor(command.actor_id)
 
     with uow:
         testpoint = _require_testpoint(uow, command.testpoint_id)
+        revision = testpoint.revision(command.revision_ver)
+        if revision is None:
+            raise RevisionNotFound(
+                command.testpoint_id, command.revision_ver
+            )
+        if revision.is_frozen:
+            raise RevisionFrozen(
+                command.testpoint_id, command.revision_ver
+            )
+        if revision.implementation is None:
+            raise ImplementationRequired(
+                command.testpoint_id, command.revision_ver
+            )
+        implementation = _require_implementation(revision.implementation)
+        for item in implementation.source.files:
+            # 读一遍而不是只查存在：内容被破坏时也要在冻结闸口暴露。
+            uow.files.get(item.content_hash)
         revision = testpoint.freeze(command.revision_ver, command.actor_id)
         uow.library.save(testpoint)
         uow.commit()
@@ -254,6 +289,34 @@ def get_testpoint_detail(uow: AbstractUnitOfWork,
         return _detail(testpoint, revision)
 
 
+def get_implementation_files(uow: AbstractUnitOfWork,
+                             command: GetImplementationFiles
+                             ) -> dict[str, str]:
+    '''get_implementation_files：按包内路径返回一份实现的文件内容。
+
+    已删除测试点的冻结修订仍然可读，供旧任务和历史复现使用。声明不存在
+    或文件内容缺失时分别报错，不返回空映射掩盖问题。
+    '''
+    with uow:
+        node = _require_node(uow, command.testpoint_id)
+        if not isinstance(node, TestPoint):
+            raise NotATestPoint(command.testpoint_id)
+        revision = node.revision(command.revision_ver)
+        if revision is None:
+            raise RevisionNotFound(
+                command.testpoint_id, command.revision_ver
+            )
+        if revision.implementation is None:
+            raise ImplementationRequired(
+                command.testpoint_id, command.revision_ver
+            )
+        implementation = _require_implementation(revision.implementation)
+        return {
+            item.path: uow.files.get(item.content_hash)
+            for item in implementation.source.files
+        }
+
+
 # ---------------------------------------------------------------------------
 # 内部辅助
 # ---------------------------------------------------------------------------
@@ -268,10 +331,27 @@ def _require_text(value: str, field: str) -> str:
     return value.strip()
 
 
-def _require_implementation(code_impl: str) -> str:
-    if not isinstance(code_impl, str) or not code_impl.strip():
-        raise InvalidArgument('code_impl must not be empty')
-    return code_impl
+def _require_implementation(value: object) -> Implementation:
+    try:
+        return validate_implementation(value)
+    except InvalidImplementation as exc:
+        raise ImplementationInvalid(str(exc)) from exc
+
+
+def _require_implementation_files(
+    files: object, implementation: Implementation
+) -> dict[str, str]:
+    if not isinstance(files, Mapping):
+        raise ImplementationInvalid('files must be a mapping')
+    try:
+        delivered = package_from_files(files)
+    except InvalidImplementation as exc:
+        raise ImplementationInvalid(str(exc)) from exc
+    if delivered != implementation.source:
+        raise ImplementationInvalid(
+            'files must exactly match implementation.source'
+        )
+    return dict(files)
 
 
 def _require_node(uow: AbstractUnitOfWork, node_id: str) -> LibNode:

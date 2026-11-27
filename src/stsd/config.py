@@ -16,6 +16,13 @@ class DbSettings(BaseSettings):
     db_url: str = 'sqlite:///stsd.db'
 
 
+class StorageSettings(BaseSettings):
+    '''从环境变量读取：STSD_FILE_ROOT，实现文件内容的存放目录。'''
+    model_config = SettingsConfigDict(env_prefix='STSD_')
+
+    file_root: str = '.stsd/files'
+
+
 def get_engine(url: str | None = None) -> Engine:
     '''url 缺省时取 STSD_DB_URL。测试可传 "sqlite://" 得到内存库。'''
     engine = create_engine(url or DbSettings().db_url)

@@ -12,3 +12,6 @@ wheels/
 tests/
 
 .claude
+
+# 本地实现文件内容
+.stsd/

@@ -8,9 +8,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from stsd.library.domain.model import RevisionDetail
+from stsd.shared.implementation import Implementation
 
 
 # ---------------------------------------------------------------------------
@@ -48,11 +50,14 @@ class ReviseTestPoint:
 
 
 @dataclass(frozen=True)
-class AddImplementation:
+class SetImplementation:
+    '''整包设置草稿修订的实现；files 是包内路径到文件内容。'''
+
     actor_id: str
     testpoint_id: str
     revision_ver: int
-    code_impl: str
+    implementation: Implementation
+    files: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -75,3 +80,9 @@ class GetSectionTree:
 class GetTestPointDetail:
     testpoint_id: str
     revision_ver: int | None = None
+
+
+@dataclass(frozen=True)
+class GetImplementationFiles:
+    testpoint_id: str
+    revision_ver: int

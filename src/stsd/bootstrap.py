@@ -21,10 +21,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from stsd.access import AccessApp, build_access_app
 from stsd.access.adapters import orm as access_orm
+from stsd.config import StorageSettings
 from stsd.integration.access import AccessProjectVersionLookup
 from stsd.library import LibraryApp, build_library_app
 from stsd.library.adapters import orm as library_orm
-from stsd.library.ports import ProjectVersionLookup
+from stsd.library.adapters.files import LocalFileStore
+from stsd.library.ports import ImplementationFileStore, ProjectVersionLookup
 from stsd.shared.events import EventPublisher, NullPublisher
 
 
@@ -58,11 +60,13 @@ def bootstrap(
     session_factory: sessionmaker[Session],
     publisher: EventPublisher | None = None,
     project_versions: ProjectVersionLookup | None = None,
+    file_store: ImplementationFileStore | None = None,
 ) -> AppContext:
     '''装配 Access 与用例库。
 
     ``project_versions`` 缺省把 Access 的读接口适配成用例库的端口；测试
     可以注入内存实现，从而在不建 Access 数据的情况下测用例库。
+    ``file_store`` 缺省把实现文件放在 ``STSD_FILE_ROOT`` 指向的本地目录。
     '''
 
     start_mappers()
@@ -72,7 +76,11 @@ def bootstrap(
     lookup = project_versions or AccessProjectVersionLookup(
         access.get_project_version
     )
+    files = file_store or LocalFileStore(StorageSettings().file_root)
     library = build_library_app(
-        session_factory, project_versions=lookup, publisher=publisher
+        session_factory,
+        project_versions=lookup,
+        publisher=publisher,
+        files=files,
     )
     return AppContext(publisher=publisher, access=access, library=library)

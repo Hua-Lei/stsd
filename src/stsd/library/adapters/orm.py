@@ -10,7 +10,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import json
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     Boolean,
@@ -28,6 +29,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import clear_mappers, registry, relationship
 
 from stsd.library.domain.model import LibNode, Section, TestPoint, TestPointVersion
+from stsd.shared.implementation import Implementation
 
 metadata = MetaData()
 mapper_registry = registry(metadata=metadata)
@@ -40,10 +42,48 @@ class UTCDateTime(TypeDecorator):
     cache_ok = True
 
     def process_bind_param(self, value: datetime | None, dialect):
-        return value.astimezone(timezone.utc) if value is not None else None
+        return value.astimezone(UTC) if value is not None else None
 
     def process_result_value(self, value: datetime | None, dialect):
-        return value.replace(tzinfo=timezone.utc) if value is not None else None
+        return value.replace(tzinfo=UTC) if value is not None else None
+
+
+class ImplementationJSON(TypeDecorator):
+    '''把实现声明序列化成 JSON 存在 TEXT 列里。
+
+    物理列仍是 TEXT；领域层看到的是 ``Implementation`` 对象。旧库里如果
+    还有原始的实现字符串，读取时会在这里报 JSON/形状错误。
+    '''
+
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if not isinstance(value, Implementation):
+            raise TypeError('implementation must be an Implementation')
+        return json.dumps(
+            value.to_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(',', ':'),
+        )
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, Implementation):
+            return value
+        if not isinstance(value, str):
+            raise TypeError('stored implementation must be JSON text')
+        try:
+            data = json.loads(value)
+        except ValueError as exc:
+            raise ValueError(
+                'stored implementation is not valid JSON'
+            ) from exc
+        return Implementation.from_dict(data)
 
 
 lib_nodes = Table(
@@ -69,7 +109,7 @@ testpoint_revisions = Table(
     Column('revision_ver', Integer, primary_key=True),
     Column('name', String, nullable=False),
     Column('description', Text, nullable=False),
-    Column('implementation', Text),
+    Column('implementation', ImplementationJSON),
     Column('proj_ver', String, nullable=False),
     Column('status', String, nullable=False),
     Column('created_at', UTCDateTime, nullable=False),

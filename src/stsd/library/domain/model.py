@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import ClassVar, Literal, Self
 from uuid import uuid4
 
@@ -22,13 +22,14 @@ from stsd.library.domain.errors import (
     RevisionFrozen,
     RevisionNotFound,
 )
+from stsd.shared.implementation import Implementation
 
 RevisionStatus = Literal['draft', 'frozen']
 NodeType = Literal['section', 'testpoint']
 
 
 def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def new_id() -> str:
@@ -37,7 +38,7 @@ def new_id() -> str:
 
 @dataclass(frozen=True)
 class RevisionDetail:
-    '''ReviseTestPoint 提供的内容。实现不在这里设置，由 AddImplementation 补。'''
+    '''ReviseTestPoint 提供的内容。实现不在这里设置，由 SetImplementation 补。'''
 
     name: str
     description: str = ''
@@ -112,7 +113,7 @@ class TestPointVersion:
     revision_ver: int
     name: str
     description: str
-    implementation: str | None
+    implementation: Implementation | None
     proj_ver: str
     status: RevisionStatus
     created_at: datetime
@@ -177,9 +178,10 @@ class TestPoint(LibNode):
         self._touch(actor_id)
         return revision
 
-    def add_implementation(self, revision_ver: int, code_impl: str,
+    def set_implementation(self, revision_ver: int,
+                           implementation: Implementation,
                            actor_id: str) -> TestPointVersion:
-        '''为草稿修订补充或覆盖实现。'''
+        '''为草稿修订设置或整包覆盖实现。'''
         if self.is_deleted:
             raise NodeDeleted(self.node_id)
         revision = self.revision(revision_ver)
@@ -187,10 +189,12 @@ class TestPoint(LibNode):
             raise RevisionNotFound(self.node_id, revision_ver)
         if revision.is_frozen:
             raise RevisionFrozen(self.node_id, revision_ver)
-        if not isinstance(code_impl, str) or not code_impl.strip():
-            raise InvalidArgument('implementation must not be empty')
+        if not isinstance(implementation, Implementation):
+            raise InvalidArgument(
+                'implementation must be an Implementation'
+            )
 
-        revision.implementation = code_impl
+        revision.implementation = implementation
         self._touch(actor_id)
         return revision
 
@@ -203,7 +207,8 @@ class TestPoint(LibNode):
             raise RevisionNotFound(self.node_id, revision_ver)
         if revision.is_frozen:
             raise RevisionFrozen(self.node_id, revision_ver)
-        if not revision.implementation or not revision.implementation.strip():
+        implementation = revision.implementation
+        if implementation is None or not implementation.source.files:
             raise ImplementationRequired(self.node_id, revision_ver)
 
         revision.status = 'frozen'

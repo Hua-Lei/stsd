@@ -1,7 +1,8 @@
 '''用例库工作单元。
 
 一次业务用例一个事务：进入时创建会话与仓储，退出时回滚未提交的改动，
-提交必须显式调用 ``commit()``。
+提交必须显式调用 ``commit()``。``files`` 是实现文件内容的存储，和仓储
+一起放在工作单元上，服务函数不必额外接收基础设施对象。
 '''
 
 from __future__ import annotations
@@ -15,11 +16,13 @@ from stsd.library.adapters.repository import (
     LibraryRepository,
     SqlAlchemyLibraryRepository,
 )
+from stsd.library.ports import ImplementationFileStore
 from stsd.shared.events import EventPublisher, NullPublisher
 
 
 class AbstractUnitOfWork(abc.ABC):
     library: LibraryRepository
+    files: ImplementationFileStore
 
     def __enter__(self) -> Self:
         return self
@@ -39,9 +42,12 @@ class SqlAlchemyUnitOfWork(AbstractUnitOfWork):
         self,
         session_factory: sessionmaker[Session],
         publisher: EventPublisher | None = None,
+        *,
+        files: ImplementationFileStore,
     ) -> None:
         self._session_factory = session_factory
         self._publisher = publisher or NullPublisher()
+        self.files = files
 
     def __enter__(self) -> Self:
         self._session = self._session_factory()

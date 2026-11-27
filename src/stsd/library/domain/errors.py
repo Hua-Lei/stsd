@@ -107,6 +107,30 @@ class ImplementationRequired(LibraryError):
         )
 
 
+class ImplementationInvalid(LibraryError):
+    '''实现声明或随声明提交的文件包不合法。'''
+
+    code = 'INVALID_IMPLEMENTATION'
+
+
+class ImplementationFileMissing(LibraryError):
+    '''声明的文件在内容存储里不存在，或内容与声明的哈希不一致。'''
+
+    code = 'IMPLEMENTATION_FILE_MISSING'
+
+    def __init__(self, content_hash: str) -> None:
+        self.content_hash = content_hash
+        super().__init__(
+            f'implementation file content {content_hash!r} is missing'
+        )
+
+
+class ImplementationStorageError(LibraryError):
+    '''内容存储读写失败。'''
+
+    code = 'IMPLEMENTATION_STORAGE_ERROR'
+
+
 class RevisionFrozen(LibraryError):
     '''已冻结的修订内容与实现都不可变，冻结不可撤销。'''
 

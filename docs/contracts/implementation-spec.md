@@ -16,6 +16,8 @@
 
 `Package` 是这份实现的文件集合，每个 `File` 是包内路径加内容哈希。文件内容不在声明里，取法见用例库的 `get_implementation_files`。
 
+写入时（`SetImplementation`）随声明一起提交包内路径到内容的映射，用例库按内容计算并校验哈希；落库的声明只保存路径与哈希。读取时 `get_implementation_files` 按哈希取回内容，声明与内容分离不影响调用方拿到的文件集合。
+
 实现挂在修订上，不是挂在测试点上，它的标识是 `(testpoint_id, revision_ver)`。
 
 ## pytest

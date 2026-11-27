@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Literal
 
 from stsd.library.domain.model import RevisionStatus
+from stsd.shared.implementation import Implementation
 
 
 @dataclass(frozen=True)
@@ -46,7 +47,7 @@ class TestPointDetail:
     revision_ver: int
     name: str
     description: str
-    implementation: str | None
+    implementation: Implementation | None
     proj_ver: str
     status: RevisionStatus
     testpoint_deleted: bool

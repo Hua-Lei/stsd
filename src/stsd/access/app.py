@@ -23,6 +23,7 @@ from stsd.access.command import (
     AddUserToProject,
     CreateProject,
     CreateUser,
+    GetProject,
     GetProjectMembers,
     GetProjectVersion,
     GetUserProjects,
@@ -33,6 +34,7 @@ from stsd.access.service_layer.service import (
     add_user_to_project,
     create_project,
     create_user,
+    get_project,
     get_project_members,
     get_project_version,
     get_user_projects,
@@ -63,6 +65,7 @@ class AccessApp:
     add_project_version: Callable[[AddProjectVersion], ProjectVersionView]
     add_user_to_project: Callable[[AddUserToProject], ProjectMemberView]
     get_user_projects: Callable[[GetUserProjects], list[ProjectView]]
+    get_project: Callable[[GetProject], ProjectView]
     get_project_members: Callable[[GetProjectMembers], list[ProjectMemberView]]
     list_project_versions: Callable[[ListProjectVersions], list[str]]
     get_project_version: Callable[[GetProjectVersion], ProjectVersionView]
@@ -94,6 +97,7 @@ def build_access_app(
         add_project_version=bind(add_project_version),
         add_user_to_project=bind(add_user_to_project),
         get_user_projects=bind(get_user_projects),
+        get_project=bind(get_project),
         get_project_members=bind(get_project_members),
         list_project_versions=bind(list_project_versions),
         get_project_version=bind(get_project_version),

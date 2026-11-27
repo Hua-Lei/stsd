@@ -24,6 +24,7 @@ from stsd.access.command import (
     AddUserToProject,
     CreateProject,
     CreateUser,
+    GetProject,
     GetProjectMembers,
     GetProjectVersion,
     GetUserProjects,
@@ -185,6 +186,13 @@ def get_user_projects(uow: AbstractUnitOfWork,
             raise UserNotFound(command.user_id)
         return [_project_view(project)
                 for project in uow.access.list_user_projects(command.user_id)]
+
+
+def get_project(uow: AbstractUnitOfWork,
+                command: GetProject) -> ProjectView:
+    '''get_project：按 project_id 读取项目的基本配置。'''
+    with uow:
+        return _project_view(_require_project(uow, command.project_id))
 
 
 def get_project_members(uow: AbstractUnitOfWork,

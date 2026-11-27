@@ -54,6 +54,11 @@ class GetUserProjects:
 
 
 @dataclass(frozen=True)
+class GetProject:
+    project_id: str
+
+
+@dataclass(frozen=True)
 class GetProjectMembers:
     project_id: str
 

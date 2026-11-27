@@ -14,6 +14,7 @@
 读接口返回不可变的读模型，字段是模块契约的一部分：新增字段兼容，改名、删除或改变语义是破坏性变更。
 
 *   `get_user_projects(user_id)` 返回 `ProjectView` 列表，字段为 `project_id`、`name`、`web_config`、`created_at`
+*   `get_project(project_id)` 返回单个 `ProjectView`，字段同上；项目不存在时报不存在
 *   `get_project_members(project_id)` 返回 `ProjectMemberView` 列表，字段为 `project_id`、`user_id`、`name`、`email`、`added_by`、`added_at`
 *   `list_project_versions(project_id)` 返回按创建时间排序的 `proj_ver` 字符串列表
 *   `get_project_version(project_id, proj_ver)` 返回 `ProjectVersionView`，字段为 `project_id`、`proj_ver`、`docs`、`created_at`，每份文档带 `kind` 和 `text`；版本不存在时报不存在

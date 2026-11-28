@@ -16,6 +16,5 @@ tests/
 # 本地实现文件内容
 .stsd/
 
-# 本地环境与 uv 缓存
-.env
+# 本地 uv 缓存
 .uv-cache/

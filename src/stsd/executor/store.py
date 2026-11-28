@@ -130,20 +130,26 @@ class ExecutionStore:
         worker_id: str,
         lease_seconds: float,
         now: datetime | None = None,
+        project_id: str | None = None,
     ) -> QueueEntry | None:
         '''领取一条待执行或租约过期的任务，并写回新租约。'''
         current = now or utc_now()
         lease_until = current + timedelta(seconds=lease_seconds)
-        claimable = or_(
-            exec_queue.c.status == 'pending',
-            and_(
-                exec_queue.c.status == 'running',
-                or_(
-                    exec_queue.c.lease_until.is_(None),
-                    exec_queue.c.lease_until < current,
+        conditions = [
+            or_(
+                exec_queue.c.status == 'pending',
+                and_(
+                    exec_queue.c.status == 'running',
+                    or_(
+                        exec_queue.c.lease_until.is_(None),
+                        exec_queue.c.lease_until < current,
+                    ),
                 ),
-            ),
-        )
+            )
+        ]
+        if project_id is not None:
+            conditions.append(exec_queue.c.project_id == project_id)
+        claimable = and_(*conditions)
 
         with self._engine.begin() as connection:
             row = connection.execute(

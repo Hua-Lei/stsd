@@ -24,13 +24,16 @@ class StorageSettings(BaseSettings):
 
 
 class ExecutionSettings(BaseSettings):
-    '''执行器的本地调度配置。'''
+    '''执行器运行时配置：本地/Docker、沙箱目录、租约与超时。'''
     model_config = SettingsConfigDict(env_prefix='STSD_')
 
     work_root: str = '.stsd/exec'
     revision_timeout: float = 300.0
     lease_seconds: float = 60.0
     poll_interval: float = 1.0
+    runtime: str = 'local'
+    docker_image: str = 'python'
+    docker_network: str | None = None
 
 
 def get_engine(url: str | None = None) -> Engine:

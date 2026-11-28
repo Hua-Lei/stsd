@@ -1,0 +1,21 @@
+services:
+  worker:
+    build:
+      context: .
+    init: true
+    restart: unless-stopped
+    environment:
+      STSD_DB_URL: sqlite:////data/stsd.db
+      STSD_FILE_ROOT: /data/files
+      STSD_WORK_ROOT: /data/exec
+      STSD_RUNTIME: docker
+      STSD_PROJECT_ID: ${STSD_PROJECT_ID:?set STSD_PROJECT_ID}
+      STSD_DOCKER_IMAGE: ${STSD_DOCKER_IMAGE:-python}
+      STSD_DOCKER_NETWORK: ${STSD_DOCKER_NETWORK:-}
+    volumes:
+      - stsd-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    stop_grace_period: 40s
+
+volumes:
+  stsd-data:

@@ -64,6 +64,7 @@ class Executor:
         poll_interval: float = 1.0,
         lease_seconds: float = 60.0,
         heartbeat_interval: float | None = None,
+        project_id: str | None = None,
     ) -> None:
         self._store = store
         self._task_reader = task_reader
@@ -78,6 +79,7 @@ class Executor:
         self._heartbeat_interval = heartbeat_interval or max(
             0.1, lease_seconds / 3
         )
+        self._project_id = project_id
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -88,6 +90,11 @@ class Executor:
         _require_text(task_id, 'task_id')
         task = self._task_reader.get_task(task_id)
         if task is None:
+            raise TaskNotFound(task_id)
+        if (
+            self._project_id is not None
+            and task.project_id != self._project_id
+        ):
             raise TaskNotFound(task_id)
         if task.status != 'LOCKED':
             raise TaskNotExecutable(task_id, task.status)
@@ -154,6 +161,7 @@ class Executor:
             worker_id=self._worker_id,
             lease_seconds=self._lease_seconds,
             now=self._clock(),
+            project_id=self._project_id,
         )
         if entry is None:
             return False

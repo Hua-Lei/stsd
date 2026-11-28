@@ -28,7 +28,10 @@ from stsd.access.adapters import orm as access_orm
 from stsd.config import ExecutionSettings, StorageSettings
 from stsd.executor import ExecutionStore, Executor, RevisionRunner
 from stsd.executor.adapters.platform import PytestPlatform
-from stsd.executor.adapters.sandbox import LocalSandboxFactory
+from stsd.executor.adapters.sandbox import (
+    DockerSandboxFactory,
+    LocalSandboxFactory,
+)
 from stsd.executor.ports import PlatformAdapter, SandboxFactory
 from stsd.integration.access import (
     AccessProjectConfigLookup,
@@ -141,11 +144,17 @@ def bootstrap_executor(
 ) -> ExecutionContext:
     '''装配一个项目的 TaskList 与执行器。
 
-    读接口由集成层适配；本地执行默认使用子进程沙箱和当前解释器里的
-    pytest，不安装声明里的依赖，依赖需要已经装在当前环境。调用方可以
-    注入 store、沙箱工厂和平台适配器替换基础设施。
+    读接口由集成层适配。``STSD_RUNTIME`` 为 ``local`` 时用子进程沙箱和
+    当前解释器里的 pytest，不安装声明里的依赖；为 ``docker`` 时用
+    ``python:<版本>-slim`` 容器并在容器里安装依赖。调用方可以注入 store、
+    沙箱工厂和平台适配器替换基础设施。
     '''
     settings = ExecutionSettings()
+    runtime = settings.runtime.strip().lower()
+    if runtime not in ('local', 'docker'):
+        raise ValueError(
+            f'STSD_RUNTIME must be "local" or "docker", got {settings.runtime!r}'
+        )
     publisher = publisher or MessageBus()
     start_mappers()
     start_tasklist_mappers()
@@ -170,14 +179,29 @@ def bootstrap_executor(
     )
     execution_store.create_schema()
 
-    sandbox_factory = sandbox_factory or LocalSandboxFactory(
-        work_root if work_root is not None else settings.work_root
-    )
-    platform = platform or PytestPlatform(
-        python=sys.executable,
-        install_pytest=False,
-        install_requirements=False,
-    )
+    if sandbox_factory is None:
+        if runtime == 'docker':
+            sandbox_factory = DockerSandboxFactory(
+                image_prefix=settings.docker_image,
+                network=settings.docker_network,
+            )
+        else:
+            sandbox_factory = LocalSandboxFactory(
+                work_root if work_root is not None else settings.work_root
+            )
+    if platform is None:
+        if runtime == 'docker':
+            platform = PytestPlatform(
+                python='python',
+                install_pytest=True,
+                install_requirements=True,
+            )
+        else:
+            platform = PytestPlatform(
+                python=sys.executable,
+                install_pytest=False,
+                install_requirements=False,
+            )
     runner = RevisionRunner(
         sandbox_factory,
         platform,
@@ -192,6 +216,7 @@ def bootstrap_executor(
         publisher=publisher,
         lease_seconds=settings.lease_seconds,
         poll_interval=settings.poll_interval,
+        project_id=proj_id,
     )
     return ExecutionContext(
         stsd=stsd,

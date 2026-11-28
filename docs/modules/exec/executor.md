@@ -1,17 +1,17 @@
 # 执行器模块规格
 
-> 状态：目标设计，尚未实现。
+> 状态：核心调度与本地执行已实现；结果系统、Task 启动事件与容器运行时待做。
 
-领取已启动的任务，运行修订的实现，产出执行结果。不关心任务和用例是怎么建立的。本文是对外契约，内部设计见 [internals.md](internals.md)。
+领取已启动的任务，运行修订的实现，产出执行结果。不关心任务和用例是怎么建立的。本文是对外契约，内部设计收在 `stsd.executor` 的模块 docstring。
 
 ## 写操作
 
-*   `ExecTask(actor_id, task_id)` 把任务排入执行队列，不等它跑完
+*   `ExecTask(actor_id, task_id)` 把任务排入执行队列，不等它跑完。`task_id` 指已锁定 TaskList 的 id
 *   `ExecTestCaseForTest(actor_id, testpoint_id, revision_ver)` 同步运行单条修订，直接返回结果
 
 ## 读依赖
 
-执行一个任务要读四样东西，各自独立事务：Task 的 `get_task_detail` 取清单，用例库的 `get_testpoint_detail` 取各修订的实现声明，`get_implementation_files` 取文件内容，Access 的项目读接口取绑定的值。
+执行一个任务要读四样东西，各自独立事务：Task 的 `get_tasklist` 取清单，用例库的 `get_testpoint_detail` 取各修订的实现声明，`get_implementation_files` 取文件内容，Access 的项目读接口取绑定的值。
 
 执行器不碰用例库的文件存储，只通过读接口取内容。
 

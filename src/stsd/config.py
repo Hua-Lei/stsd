@@ -23,6 +23,16 @@ class StorageSettings(BaseSettings):
     file_root: str = '.stsd/files'
 
 
+class ExecutionSettings(BaseSettings):
+    '''执行器的本地调度配置。'''
+    model_config = SettingsConfigDict(env_prefix='STSD_')
+
+    work_root: str = '.stsd/exec'
+    revision_timeout: float = 300.0
+    lease_seconds: float = 60.0
+    poll_interval: float = 1.0
+
+
 def get_engine(url: str | None = None) -> Engine:
     '''url 缺省时取 STSD_DB_URL。测试可传 "sqlite://" 得到内存库。'''
     engine = create_engine(url or DbSettings().db_url)

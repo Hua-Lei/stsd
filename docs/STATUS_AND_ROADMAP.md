@@ -3,14 +3,15 @@
 
 ## 代码库状况
 
-1. access和library模块基本成型
-2. task基本完成
-3. 其余模块待做
+1. access、library、tasklist 基本成型
+2. 用例库的实现声明、内容寻址文件存储、`SetImplementation` / `get_implementation_files` 已落地
+3. 执行器的 Job 队列、worker、本地子进程沙箱、pytest 平台适配器和项目装配已落地
+4. 结果系统尚未订阅 `TaskExecCompleted`，容器运行时、Task 启动事件与 Agent 待做
 
 ## Roadmap
 
-- [] TestCase相关设计，需要调整library库的内容，可能需要另外引入基础设施  
-需要考虑测试平台，实现相关抽象
-- [ ] 执行器的内容，也需要 测试用例实现 相关的抽象
-- [ ] 结果持久化&分析相关的内容
-- [ ] Agent模块的接入，这一部分暂时最后考虑接入， 相关的一些基础设施也没做
+- [x] 测试点实现声明与文件存储（library）
+- [x] 执行器核心：队列、租约、worker、本地沙箱、pytest 适配器
+- [ ] 执行器：容器运行时、TaskStarted 订阅与启动补齐
+- [ ] 结果持久化 & 分析
+- [ ] Agent 模块接入

@@ -4,10 +4,11 @@
 
 1. 进程级 mapper 的启停。``clear_mappers()`` 作用于整个进程，映射的启停
    不属于任何单个模块。
-2. 跨模块依赖的选择。把 Access 已经装配好的读接口适配成用例库的
-   ``ProjectVersionLookup``。
-3. 组装 ``AppContext``。调用方只看到 ``command -> 读模型`` 的入口；工作单元
-   由模块的装配函数在内部按次创建，调用方看不到会话和事务。
+2. 跨模块依赖的选择。把 Access 的读接口适配成用例库和 TaskList 的版本端口，
+   把用例库的读接口适配成 TaskList 端口和执行器读取端口。
+3. 组装 ``AppContext`` / ``ExecutionContext``。调用方只看到 ``command -> 读模型``
+   和 ``Executor`` 的入口；工作单元由模块的装配函数在内部按次创建，调用方
+   看不到会话和事务。
 
 模块门面仍保留 ``(uow[, dep], command)`` 形状，供模块内测试和组合使用；
 ``stsd.bootstrap`` 与 ``stsd.integration`` 是仅有的跨模块导入点。
@@ -15,19 +16,40 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
+from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from stsd.access import AccessApp, build_access_app
 from stsd.access.adapters import orm as access_orm
-from stsd.config import StorageSettings
-from stsd.integration.access import AccessProjectVersionLookup
+from stsd.config import ExecutionSettings, StorageSettings
+from stsd.executor import ExecutionStore, Executor, RevisionRunner
+from stsd.executor.adapters.platform import PytestPlatform
+from stsd.executor.adapters.sandbox import LocalSandboxFactory
+from stsd.executor.ports import PlatformAdapter, SandboxFactory
+from stsd.integration.access import (
+    AccessProjectConfigLookup,
+    AccessProjectVersionLookup,
+)
+from stsd.integration.library import (
+    LibraryRevisionReader,
+    LibraryTestPointAdapter,
+)
+from stsd.integration.tasklist import TaskListTaskReader
 from stsd.library import LibraryApp, build_library_app
 from stsd.library.adapters import orm as library_orm
 from stsd.library.adapters.files import LocalFileStore
 from stsd.library.ports import ImplementationFileStore, ProjectVersionLookup
-from stsd.shared.events import EventPublisher, NullPublisher
+from stsd.shared.events import (
+    EventPublisher,
+    MessageBus,
+    NullPublisher,
+)
+from stsd.tasklist import TaskListApp, build_tasklist_app
+from stsd.tasklist.adapters.orm import start_mappers as start_tasklist_mappers
 
 
 @dataclass(frozen=True)
@@ -37,6 +59,24 @@ class AppContext:
     publisher: EventPublisher
     access: AccessApp
     library: LibraryApp
+
+
+@dataclass(frozen=True)
+class ExecutionContext:
+    '''一个项目内可执行任务的入口：Access、用例库、TaskList 与执行器。'''
+
+    stsd: AppContext
+    tasklist: TaskListApp
+    executor: Executor
+    publisher: EventPublisher
+
+    @property
+    def access(self) -> AccessApp:
+        return self.stsd.access
+
+    @property
+    def library(self) -> LibraryApp:
+        return self.stsd.library
 
 
 def start_mappers() -> None:
@@ -84,3 +124,89 @@ def bootstrap(
         files=files,
     )
     return AppContext(publisher=publisher, access=access, library=library)
+
+
+def bootstrap_executor(
+    session_factory: sessionmaker[Session],
+    proj_id: str,
+    *,
+    publisher: EventPublisher | None = None,
+    project_versions: ProjectVersionLookup | None = None,
+    file_store: ImplementationFileStore | None = None,
+    engine: Engine | None = None,
+    work_root: str | Path | None = None,
+    store: ExecutionStore | None = None,
+    sandbox_factory: SandboxFactory | None = None,
+    platform: PlatformAdapter | None = None,
+) -> ExecutionContext:
+    '''装配一个项目的 TaskList 与执行器。
+
+    读接口由集成层适配；本地执行默认使用子进程沙箱和当前解释器里的
+    pytest，不安装声明里的依赖，依赖需要已经装在当前环境。调用方可以
+    注入 store、沙箱工厂和平台适配器替换基础设施。
+    '''
+    settings = ExecutionSettings()
+    publisher = publisher or MessageBus()
+    start_mappers()
+    start_tasklist_mappers()
+
+    stsd = bootstrap(
+        session_factory,
+        publisher=publisher,
+        project_versions=project_versions,
+        file_store=file_store,
+    )
+    lookup = project_versions or AccessProjectVersionLookup(
+        stsd.access.get_project_version
+    )
+    tasklist = build_tasklist_app(
+        session_factory,
+        proj_id,
+        LibraryTestPointAdapter(stsd.library),
+        lookup,
+    )
+    execution_store = store or ExecutionStore(
+        engine or _engine_from_session_factory(session_factory)
+    )
+    execution_store.create_schema()
+
+    sandbox_factory = sandbox_factory or LocalSandboxFactory(
+        work_root if work_root is not None else settings.work_root
+    )
+    platform = platform or PytestPlatform(
+        python=sys.executable,
+        install_pytest=False,
+        install_requirements=False,
+    )
+    runner = RevisionRunner(
+        sandbox_factory,
+        platform,
+        revision_timeout=settings.revision_timeout,
+    )
+    executor = Executor(
+        store=execution_store,
+        task_reader=TaskListTaskReader(tasklist),
+        testpoint_reader=LibraryRevisionReader(stsd.library),
+        binding_lookup=AccessProjectConfigLookup(stsd.access.get_project),
+        runner=runner,
+        publisher=publisher,
+        lease_seconds=settings.lease_seconds,
+        poll_interval=settings.poll_interval,
+    )
+    return ExecutionContext(
+        stsd=stsd,
+        tasklist=tasklist,
+        executor=executor,
+        publisher=publisher,
+    )
+
+
+def _engine_from_session_factory(
+    session_factory: sessionmaker[Session],
+) -> Engine:
+    bind = session_factory.kw.get('bind')
+    if not isinstance(bind, Engine):
+        raise TypeError(
+            'bootstrap_executor needs a session factory bound to an Engine'
+        )
+    return bind

@@ -1,22 +1,40 @@
-'''事件发布端口与进程内消息总线。
+'''事件发布端口、进程内消息总线，以及跨模块事件载荷。
 
-模块只依赖 ``EventPublisher``：它只能宣告“这件事发生了”，不知道谁在监听，
-也接触不到处理器注册表。注册表归组装根（``stsd.bootstrap``）持有。
-
-发布时机由工作单元保证：``commit()`` 成功之后才发布，否则订阅者可能对一个
-随后被回滚的事实做出反应。``publish`` 不返回任何结果，因此以后改成异步派发
-时调用方不需要改动。
+模块只依赖 ``EventPublisher``；发布发生在发布方的数据提交之后。
 '''
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
 Handler = Callable[[object], None]
+
+RevisionStatus = Literal['passed', 'failed', 'error', 'not_run']
+
+
+@dataclass(frozen=True)
+class RevisionResult:
+    '''一次任务里某条修订的结论。'''
+
+    testpoint_id: str
+    revision_ver: int
+    status: RevisionStatus
+    detail: dict[str, Any]
+    bindings: dict[str, str]
+
+
+@dataclass(frozen=True)
+class TaskExecCompleted:
+    '''一个任务的全部修订都到终态之后发布一次。'''
+
+    task_id: str
+    task_run_id: str
+    results: tuple[RevisionResult, ...]
 
 
 @runtime_checkable

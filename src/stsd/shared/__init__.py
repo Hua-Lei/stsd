@@ -5,7 +5,13 @@
 不往这里堆。
 '''
 
-from stsd.shared.events import EventPublisher, MessageBus, NullPublisher
+from stsd.shared.events import (
+    EventPublisher,
+    MessageBus,
+    NullPublisher,
+    RevisionResult,
+    TaskExecCompleted,
+)
 from stsd.shared.implementation import (
     File,
     Implementation,
@@ -28,6 +34,8 @@ __all__ = [
     'Package',
     'PytestRequirements',
     'PytestRuntimeSpec',
+    'RevisionResult',
+    'TaskExecCompleted',
     'hash_content',
     'package_from_files',
     'validate_implementation',

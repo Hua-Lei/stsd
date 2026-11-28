@@ -27,6 +27,6 @@
 
 1.  任务清单里只有已冻结的修订，内容不可变，因此执行时读到的实现不会在运行中被改动，见 [decisions/005](../../decisions/005-module-interaction.md)。
 2.  被测地址等绑定在执行时填入，不在实现里，见 [decisions/008](../../decisions/008-implementation-binding-not-frozen.md)。实际用的值随结果一起交出去。
-3.  每条修订的结论以 `(task_run_id, testpoint_id, revision_ver)` 为键单独落库，写入幂等。任务重试时跳过已到终态的修订，见 [decisions/009](../../decisions/009-execution-work-unit.md)。
+3.  执行器不保存修订级结论。worker 在内存里收集本次任务的各修订结论，全部到终态后发 `TaskExecCompleted`，由结果系统落库。进程崩溃导致租约过期后，重新领取时整个任务重跑，不做修订级续跑。
 4.  一条修订的实现可能包含多个测试函数。明细原样保留，修订级结论按"有 error 则 error，有 failed 则 failed，否则 passed"收敛。
 5.  `ExecTestCaseForTest` 可以针对草稿修订，用于冻结前验证实现。它的结果直接返回给调用方，不属于任何任务，也不交给结果系统保存。
